@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="lockstep-gradient" x1="18" y1="12" x2="112" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#76a3ff"/>
+      <stop offset="1" stop-color="#a18aff"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="32" fill="url(#lockstep-gradient)"/>
+  <path d="M64 32 91 42v20.5c0 16.1-10.8 28.7-27 34.8-16.2-6.1-27-18.7-27-34.8V42l27-10Z" fill="none" stroke="#fff" stroke-linejoin="round" stroke-width="7"/>
+  <path d="m51.7 64.7 7.7 7.7 17.3-17.3" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="7"/>
+</svg>

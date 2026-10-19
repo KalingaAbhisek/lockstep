@@ -30,7 +30,7 @@ public class SecurityConfig {
                         .referrerPolicy(referrer -> referrer.policy(ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN)))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/", "/index.html", "/app.js", "/crypto-store.js", "/styles.css", "/manifest.webmanifest",
-                                "/sw.js", "/icons/**", "/api/v1/config", "/actuator/health", "/error").permitAll()
+                                "/sw.js", "/privacy.html", "/icons/**", "/api/v1/config", "/actuator/health", "/error").permitAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll())
                 .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()))

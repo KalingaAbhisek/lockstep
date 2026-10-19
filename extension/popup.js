@@ -45,6 +45,10 @@ function showRouteSkeleton() {
 }
 bind("settings", "click", openSettings);
 bind("settings-back", "click", hideSettings);
+bind("settings-privacy", "click", async () => {
+    const result = await send("OPEN_PRIVACY");
+    if (!result.ok) settingsMessage(result.error, true);
+});
 bind("scan", "click", startScan);
 async function startScan() {
     const result = await send("START_SCAN");

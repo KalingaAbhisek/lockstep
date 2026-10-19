@@ -97,6 +97,7 @@ function bindEvents() {
     el("settings-recovery-export").addEventListener("click", exportRecoveryKey);
     el("settings-key-rotate").addEventListener("click", rotateEncryptionKey);
     el("settings-signout").addEventListener("click", () => { el("settings-dialog").close(); signOut(true); });
+    el("settings-privacy").addEventListener("click", () => { window.location.href = "/privacy.html"; });
     el("settings-lock").addEventListener("click", openLockSettings);
     el("lock-form").addEventListener("submit", saveLockSettings);
     el("lock-dialog").addEventListener("cancel", event => { if (state.lockSetupRequired) event.preventDefault(); });

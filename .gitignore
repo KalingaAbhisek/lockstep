@@ -6,6 +6,8 @@ target/
 .env
 .env.invalid-key-backup
 data/
+dist/
+store-assets/
 *.log
 secrets/
 *-firebase-adminsdk-*.json

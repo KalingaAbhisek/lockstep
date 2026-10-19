@@ -27,7 +27,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         RESET_VAULT: resetVault,
         ROTATE_ENCRYPTION_KEY: () => withUnlocked(() => rotateEncryptionKey(message.passcode)),
         GET_SYNC_STATE: syncState,
-        SYNC_NOW: synchronize
+        SYNC_NOW: synchronize,
+        OPEN_PRIVACY: openPrivacyPolicy
     };
     if (!Object.hasOwn(actions, message.type)) return false;
     Promise.resolve().then(() => actions[message.type]())
@@ -35,6 +36,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch(error => sendResponse({ ok: false, error: error?.message || "The requested extension action failed.", code: error?.code }));
     return true;
 });
+
+async function openPrivacyPolicy() {
+    const baseUrl = String(AUTHSYNC_CONFIG.apiBaseUrl || "").replace(/\/+$/, "");
+    if (!baseUrl) throw new Error("The Lockstep server URL is not configured.");
+    await chrome.tabs.create({ url: `${baseUrl}/privacy.html` });
+    return true;
+}
 
 async function login() {
     const claims = await authorize(true);
