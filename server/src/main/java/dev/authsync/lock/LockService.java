@@ -13,14 +13,14 @@ import java.util.Set;
 public class LockService {
     private static final int ITERATIONS = 210_000;
     private static final int KEY_BITS = 256;
-    private static final Set<Integer> ALLOWED_TIMEOUTS = Set.of(0, 60, 300, 900, 1800);
+    private static final Set<Integer> ALLOWED_TIMEOUTS = Set.of(60, 300, 900, 1800);
     private final LockSettingsRepository repository;
     private final SecureRandom random = new SecureRandom();
 
     public LockService(LockSettingsRepository repository) { this.repository = repository; }
 
     public LockConfig config(String subject) {
-        return repository.find(subject).map(settings -> new LockConfig(true, Math.min(settings.timeoutSeconds(), 1800), settings.wrappedKey())).orElse(new LockConfig(false, 0, null));
+        return repository.find(subject).map(settings -> new LockConfig(true, Math.max(60, Math.min(settings.timeoutSeconds(), 1800)), settings.wrappedKey())).orElse(new LockConfig(false, 0, null));
     }
 
     public LockConfig configure(String subject, String passcode, int timeoutSeconds) {

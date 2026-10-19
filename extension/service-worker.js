@@ -111,13 +111,14 @@ async function withUnlocked(action) {
 }
 
 async function cachedLockConfig() {
-    return (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig || { enabled: true, timeoutSeconds: 0 };
+    const config = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig || { enabled: true, timeoutSeconds: 60 };
+    return { ...config, timeoutSeconds: Number(config.timeoutSeconds) > 0 ? Number(config.timeoutSeconds) : 60 };
 }
 
 async function persistUnlockedSession(owner, config = null) {
     const lock = config || await cachedLockConfig();
     const lastUnlockedAt = Date.now();
-    if (!lock.enabled || lock.timeoutSeconds <= 0) {
+    if (!lock.enabled) {
         await chrome.storage.session.remove("unlockedMaster");
         await chrome.storage.session.set({ lastUnlockedAt });
         return;
@@ -133,7 +134,7 @@ async function clearUnlockedSession(owner) {
 
 async function enforceTimedLock(owner) {
     const config = await cachedLockConfig();
-    if (!config.enabled || config.timeoutSeconds <= 0) return;
+    if (!config.enabled) return;
     const session = await chrome.storage.session.get("lastUnlockedAt");
     if (!session.lastUnlockedAt || Date.now() - session.lastUnlockedAt >= config.timeoutSeconds * 1000) await clearUnlockedSession(owner);
 }
@@ -141,7 +142,7 @@ async function enforceTimedLock(owner) {
 async function resumeVault() {
     const owner = await subject();
     const config = await getLockConfig();
-    if (!config.enabled || config.timeoutSeconds <= 0) { await clearUnlockedSession(owner); return false; }
+    if (!config.enabled) { await clearUnlockedSession(owner); return false; }
     const session = await chrome.storage.session.get(["lastUnlockedAt", "unlockedMaster"]);
     if (!session.lastUnlockedAt || Date.now() - session.lastUnlockedAt >= config.timeoutSeconds * 1000) { await clearUnlockedSession(owner); return false; }
     if (!LockstepVault.isUnlocked(owner)) {
@@ -302,7 +303,7 @@ async function importRecoveryKey(value, passcode) {
     const version = await LockstepVault.importRecoveryKey(owner, value, passcode);
     const cached = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig;
     const wrappedKey = await LockstepVault.exportWrappedKey(owner);
-    const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 0, wrappedKey }) });
+    const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 60, wrappedKey }) });
     await chrome.storage.local.set({ cachedLockConfig: config });
     await chrome.storage.session.remove("restoreAuthorized");
     await persistUnlockedSession(owner, config);
@@ -318,7 +319,7 @@ async function rotateEncryptionKey(passcode) {
     try {
         // Publish the new wrapped key BEFORE the re-encrypted entries so other devices can always decrypt what they pull.
         const cached = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig;
-        const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 0, wrappedKey: result.wrappedKey }) });
+        const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 60, wrappedKey: result.wrappedKey }) });
         await chrome.storage.local.set({ cachedLockConfig: config });
         await synchronize();
         await persistUnlockedSession(owner, config);
@@ -343,11 +344,12 @@ async function getLockConfig() {
         const cached = await chrome.storage.local.get("cachedLockConfig");
         config = cached.cachedLockConfig;
         // Offline / expired token but this device holds a protected key: the lock obviously exists.
-        if (!config && keyState === "wrapped") config = { enabled: true, timeoutSeconds: 0 };
+        if (!config && keyState === "wrapped") config = { enabled: true, timeoutSeconds: 60 };
         if (!config) throw coded("SESSION_EXPIRED", "Sign in again to synchronize.");
     }
     // A passkey-wrapped key on this device means the lock is on, whatever a stale cache/server says.
     if (keyState === "wrapped" && !config.enabled) config = { ...config, enabled: true };
+    config = { ...config, timeoutSeconds: Number(config.timeoutSeconds) > 0 ? Number(config.timeoutSeconds) : 60 };
     return config;
 }
 async function setLockConfig(passcode, timeoutSeconds, initialSetup = false) {
@@ -402,7 +404,7 @@ async function verifyLock(passcode) {
             // Also republish when this device holds a newer wrapped key (e.g. a rotation whose upload failed).
             if (!serverConfig.enabled || localNewer) {
                 const cached = await chrome.storage.local.get("cachedLockConfig");
-                const timeoutSeconds = cached.cachedLockConfig?.timeoutSeconds || 0;
+                const timeoutSeconds = cached.cachedLockConfig?.timeoutSeconds || 60;
                 const restored = await api("/api/v1/lock", {
                     method: "PUT",
                     body: JSON.stringify({ passcode, timeoutSeconds, wrappedKey: await LockstepVault.exportWrappedKey(owner) })

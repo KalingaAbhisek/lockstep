@@ -44,6 +44,9 @@ class LockServiceTest {
         assertThatThrownBy(() -> service.configure("user", "1234", 30))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("timeout");
+        assertThatThrownBy(() -> service.configure("user", "1234", 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout");
         assertThat(service.configure("user", "1234", 1800).timeoutSeconds()).isEqualTo(1800);
         assertThatThrownBy(() -> service.configure("user", "1234", 3600))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -58,8 +61,15 @@ class LockServiceTest {
     }
 
     @Test
+    void migratesLegacyImmediateLockSettingsToOneMinute() {
+        repository.save("legacy-user", new LockSettings(new byte[16], new byte[32], 210_000, 0));
+
+        assertThat(service.config("legacy-user")).isEqualTo(new LockService.LockConfig(true, 60));
+    }
+
+    @Test
     void removesExistingLockSettings() {
-        service.configure("user", "1234", 0);
+        service.configure("user", "1234", 60);
 
         service.remove("user");
 

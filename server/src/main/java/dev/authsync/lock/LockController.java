@@ -33,7 +33,7 @@ public class LockController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void remove(@AuthenticationPrincipal Jwt jwt) { service.remove(jwt.getSubject()); }
 
-    public record ConfigureLockRequest(@NotBlank @Size(min=4,max=128) String passcode, @Min(0) @Max(1800) int timeoutSeconds, WrappedVaultKey wrappedKey) {}
+    public record ConfigureLockRequest(@NotBlank @Size(min=4,max=128) String passcode, @Min(60) @Max(1800) int timeoutSeconds, WrappedVaultKey wrappedKey) {}
     public record VerifyLockRequest(@NotBlank @Size(max=128) String passcode) {}
     public record VerifyLockResponse(boolean unlocked) {}
 }

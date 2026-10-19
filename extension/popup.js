@@ -14,7 +14,7 @@ let localEntryOrder = [];
 let confirmationResolve = null;
 let confirmPasskeyValue = "";
 let restoreReturnView = "signed-out";
-let lockConfig = { enabled: false, timeoutSeconds: 0 };
+let lockConfig = { enabled: false, timeoutSeconds: 60 };
 let isAuthenticated = false;
 let lockSetupRequired = false;
 let userDisplayName = "";
@@ -863,12 +863,8 @@ async function loadLockAndRoute() {
     }
     // A key exists locally => the lock is enabled (local key is authoritative and works offline).
     lockConfig = { ...lockConfig, enabled: true };
-    if (lockConfig.timeoutSeconds > 0) {
-        const resumed = await send("RESUME_VAULT");
-        if (resumed.ok && resumed.data) { await showSignedIn(); return; }
-    } else {
-        await send("LOCK_VAULT");
-    }
+    const resumed = await send("RESUME_VAULT");
+    if (resumed.ok && resumed.data) { await showSignedIn(); return; }
     showLocked();
 }
 
@@ -925,7 +921,7 @@ async function openLockSettings({ required = false, refresh = true } = {}) {
     }
     lockSetupRequired = required;
     updateLockSummary();
-    $("lock-form").reset(); $("lock-timeout").value = String(lockConfig.timeoutSeconds || 0); $("lock-error").textContent = "";
+    $("lock-form").reset(); $("lock-timeout").value = String(lockConfig.timeoutSeconds || 60); $("lock-error").textContent = "";
     $("lock-dialog-title").textContent = required ? "Create your app lock" : "Change your app lock";
     $("lock-dialog-description").textContent = required
         ? "Create a passkey before adding or viewing authenticator accounts. It cannot be recovered."
@@ -955,8 +951,8 @@ async function saveLockSettings(event) {
 }
 
 function updateLockSummary() {
-    const descriptions = { 0: "Locks whenever the extension is reopened", 60: "Locks after 1 minute", 300: "Locks after 5 minutes", 900: "Locks after 15 minutes", 1800: "Locks after 30 minutes" };
-    $("lock-summary").textContent = lockConfig.enabled ? descriptions[lockConfig.timeoutSeconds] || "Passkey enabled" : "Protect codes with a passkey";
+    const descriptions = { 60: "Locks after 1 minute of inactivity", 300: "Locks after 5 minutes of inactivity", 900: "Locks after 15 minutes of inactivity", 1800: "Locks after 30 minutes of inactivity" };
+    $("lock-summary").textContent = lockConfig.enabled ? descriptions[lockConfig.timeoutSeconds] || "Locks after inactivity" : "Protect codes with a passkey";
 }
 async function exportBackup() {
     const confirmed = await confirmAction({
