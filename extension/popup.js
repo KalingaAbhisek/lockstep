@@ -31,7 +31,7 @@ bind("login", "click", async () => {
     if (result.ok) {
         userDisplayName = result.data.displayName || result.data.email || "";
         showRouteSkeleton();
-        loadLockAndRoute({ afterLogin: true });
+        loadLockAndRoute();
     } else status(result.error, true);
 });
 function showRouteSkeleton() {
@@ -838,17 +838,13 @@ function handleSessionProblem(result) {
     return false;
 }
 
-async function loadLockAndRoute({ afterLogin = false } = {}) {
+async function loadLockAndRoute() {
     const state = await send("GET_VAULT_STATE");
     if (!state.ok || !state.data.hasSubject) { showSignedOut(); return; }
-    const { tokenValid, accountExists, newAccountSetupAuthorized, restoreAuthorized, keyState, displayName } = state.data;
+    const { accountExists, newAccountSetupAuthorized, keyState, displayName } = state.data;
     userDisplayName = displayName || "";
     if (accountExists === false && !newAccountSetupAuthorized) {
         showSignedOut(); status("Your server account no longer exists. Sign in again to start fresh.", true); return;
-    }
-    if (!tokenValid) {
-        await send("LOCK_VAULT");
-        showSignedOut(); status("Session expired. Sign in with Google again.", true); return;
     }
     const result = await send("GET_LOCK_CONFIG");
     if (!result.ok) { showSignedOut(); return; }
@@ -860,12 +856,19 @@ async function loadLockAndRoute({ afterLogin = false } = {}) {
             await openLockSettings({ required: true, refresh: false });
             return;
         }
-        if (restoreAuthorized || afterLogin) { showRestore(undefined, "signed-out"); return; }
-        showSignedOut(); status("Local vault data was cleared. Sign in with Google again.", true);
+        // Recovery is determined by the durable vault state, not by a temporary
+        // chrome.storage.session flag that can disappear after a background reload.
+        showRestore(undefined, "signed-out");
         return;
     }
-    // A key exists locally => the lock is enabled (local key is authoritative, works offline / logged out).
+    // A key exists locally => the lock is enabled (local key is authoritative and works offline).
     lockConfig = { ...lockConfig, enabled: true };
+    if (lockConfig.timeoutSeconds > 0) {
+        const resumed = await send("RESUME_VAULT");
+        if (resumed.ok && resumed.data) { await showSignedIn(); return; }
+    } else {
+        await send("LOCK_VAULT");
+    }
     showLocked();
 }
 
@@ -1039,3 +1042,13 @@ window.addEventListener("online", () => {
     if (isAuthenticated && !$("signed-in").classList.contains("hidden")) load(true);
 });
 window.addEventListener("offline", () => { if (isAuthenticated) status("Offline"); });
+
+let lastExtensionActivityAt = 0;
+function recordExtensionActivity() {
+    if (!isAuthenticated || $("signed-in").classList.contains("hidden")) return;
+    const now = Date.now();
+    if (now - lastExtensionActivityAt < 1000) return;
+    lastExtensionActivityAt = now;
+    send("TOUCH_VAULT");
+}
+["pointermove", "pointerdown", "keydown", "touchstart", "scroll"].forEach((eventName) => document.addEventListener(eventName, recordExtensionActivity, { passive: true }));

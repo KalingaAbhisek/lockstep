@@ -16,6 +16,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         GET_ENTRY_QR: () => withUnlocked(() => localOtpUri(message.id)),
         GET_VAULT_STATE: vaultState,
         GET_LOCK_CONFIG: getLockConfig,
+        RESUME_VAULT: resumeVault,
+        TOUCH_VAULT: touchVault,
         SET_LOCK_CONFIG: () => message.initialSetup ? setLockConfig(message.passcode, message.timeoutSeconds, true) : withUnlocked(() => setLockConfig(message.passcode, message.timeoutSeconds, false)),
         VERIFY_LOCK: () => verifyLock(message.passcode),
         LOCK_VAULT: lockVault,
@@ -103,8 +105,58 @@ function coded(code, message) { const error = new Error(message); error.code = c
 
 async function withUnlocked(action) {
     const owner = await subject();
+    await enforceTimedLock(owner);
     if (!LockstepVault.isUnlocked(owner)) throw coded("VAULT_LOCKED", "Unlock the authenticator before using this feature.");
     return action();
+}
+
+async function cachedLockConfig() {
+    return (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig || { enabled: true, timeoutSeconds: 0 };
+}
+
+async function persistUnlockedSession(owner, config = null) {
+    const lock = config || await cachedLockConfig();
+    const lastUnlockedAt = Date.now();
+    if (!lock.enabled || lock.timeoutSeconds <= 0) {
+        await chrome.storage.session.remove("unlockedMaster");
+        await chrome.storage.session.set({ lastUnlockedAt });
+        return;
+    }
+    const snapshot = LockstepVault.exportSessionKey(owner);
+    await chrome.storage.session.set({ lastUnlockedAt, unlockedMaster: snapshot ? { subject: owner, snapshot } : null });
+}
+
+async function clearUnlockedSession(owner) {
+    LockstepVault.lock(owner);
+    await chrome.storage.session.remove(["lastUnlockedAt", "unlockedMaster"]);
+}
+
+async function enforceTimedLock(owner) {
+    const config = await cachedLockConfig();
+    if (!config.enabled || config.timeoutSeconds <= 0) return;
+    const session = await chrome.storage.session.get("lastUnlockedAt");
+    if (!session.lastUnlockedAt || Date.now() - session.lastUnlockedAt >= config.timeoutSeconds * 1000) await clearUnlockedSession(owner);
+}
+
+async function resumeVault() {
+    const owner = await subject();
+    const config = await getLockConfig();
+    if (!config.enabled || config.timeoutSeconds <= 0) { await clearUnlockedSession(owner); return false; }
+    const session = await chrome.storage.session.get(["lastUnlockedAt", "unlockedMaster"]);
+    if (!session.lastUnlockedAt || Date.now() - session.lastUnlockedAt >= config.timeoutSeconds * 1000) { await clearUnlockedSession(owner); return false; }
+    if (!LockstepVault.isUnlocked(owner)) {
+        if (session.unlockedMaster?.subject !== owner || !await LockstepVault.restoreSessionKey(owner, session.unlockedMaster.snapshot)) {
+            await clearUnlockedSession(owner); return false;
+        }
+    }
+    return true;
+}
+
+async function touchVault() {
+    const owner = await subject();
+    if (!LockstepVault.isUnlocked(owner)) return false;
+    await persistUnlockedSession(owner);
+    return true;
 }
 
 async function token() {
@@ -140,23 +192,26 @@ async function vaultState() {
     const sessionFlags = await chrome.storage.session.get(["newAccountSetupAuthorized", "restoreAuthorized"]);
     let accountExists = null;
     if (validToken) {
-        accountExists = await backendAccountExists();
-        if (accountExists) {
-            const config = await api("/api/v1/lock");
-            await LockstepVault.synchronizeWrappedKey(owner, config.wrappedKey);
-            await chrome.storage.local.set({ cachedLockConfig: config });
-        }
+        try {
+            accountExists = await backendAccountExists();
+            if (accountExists) {
+                const config = await api("/api/v1/lock");
+                await LockstepVault.synchronizeWrappedKey(owner, config.wrappedKey);
+                await chrome.storage.local.set({ cachedLockConfig: config });
+            }
+        } catch { accountExists = null; }
     }
     if (accountExists === false && !sessionFlags.newAccountSetupAuthorized) {
         await LockstepVault.clearSubject(owner);
         await chrome.storage.local.remove("cachedLockConfig");
-        await chrome.storage.session.remove("lastUnlockedAt");
+        await chrome.storage.session.remove(["lastUnlockedAt", "unlockedMaster"]);
         lastSyncError = null;
     }
     return {
         hasSubject: true,
         displayName: refreshedClaims?.name || refreshedClaims?.given_name || refreshedClaims?.email || refreshedLocal.vaultDisplayName || local.vaultDisplayName || "",
         tokenValid: validToken,
+        online: navigator.onLine,
         accountExists,
         newAccountSetupAuthorized: Boolean(sessionFlags.newAccountSetupAuthorized),
         restoreAuthorized: Boolean(sessionFlags.restoreAuthorized),
@@ -250,6 +305,7 @@ async function importRecoveryKey(value, passcode) {
     const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 0, wrappedKey }) });
     await chrome.storage.local.set({ cachedLockConfig: config });
     await chrome.storage.session.remove("restoreAuthorized");
+    await persistUnlockedSession(owner, config);
     return { version, entries: await localEntries() };
 }
 async function rotateEncryptionKey(passcode) {
@@ -265,6 +321,7 @@ async function rotateEncryptionKey(passcode) {
         const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 0, wrappedKey: result.wrappedKey }) });
         await chrome.storage.local.set({ cachedLockConfig: config });
         await synchronize();
+        await persistUnlockedSession(owner, config);
         return { version: result.version, count: result.count, recoveryKey: result.recoveryKey, rotated: true, synchronized: true };
     } catch (error) {
         return { version: result.version, count: result.count, recoveryKey: result.recoveryKey, rotated: true, synchronized: false, syncError: error?.message || "Synchronization failed." };
@@ -312,26 +369,30 @@ async function setLockConfig(passcode, timeoutSeconds, initialSetup = false) {
     config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds, wrappedKey }) });
     await chrome.storage.local.set({ cachedLockConfig: config });
     await chrome.storage.session.remove("newAccountSetupAuthorized");
+    await persistUnlockedSession(vaultSubject, config);
     return config;
 }
 async function verifyLock(passcode) {
     const owner = await subject();
-    const online = await tokenValid();
-    if (online) {
-        const latest = await api("/api/v1/lock");
-        await LockstepVault.synchronizeWrappedKey(owner, latest.wrappedKey);
-        await chrome.storage.local.set({ cachedLockConfig: latest });
+    let serverAvailable = false;
+    if (await tokenValid()) {
+        try {
+            const latest = await api("/api/v1/lock");
+            await LockstepVault.synchronizeWrappedKey(owner, latest.wrappedKey);
+            await chrome.storage.local.set({ cachedLockConfig: latest });
+            serverAvailable = true;
+        } catch { /* The local passkey remains authoritative while offline. */ }
     }
     const keyState = await LockstepVault.keyState(owner);
     if (keyState === "none") {
         // No key on this device (reset / cleared storage). A correct passkey cannot help; need recovery key.
-        if (!online) throw coded("SESSION_EXPIRED", "Sign in again to restore your vault.");
+        if (!serverAvailable) throw coded("SESSION_EXPIRED", "Sign in again to restore your vault.");
         throw coded("KEY_MISSING", "This device does not have your vault key. Restore it with your recovery key.");
     }
     try {
         // Local AES-GCM unwrap is authoritative and works offline / with an expired Google token.
         await LockstepVault.unlock(owner, passcode);
-        if (online) {
+        if (serverAvailable) {
             // Firestore may have been manually cleared while this device retained its
             // wrapped master key. Recreate the missing verifier from the passkey that
             // just successfully unwrapped the local vault before entries synchronize.
@@ -349,16 +410,17 @@ async function verifyLock(passcode) {
                 await chrome.storage.local.set({ cachedLockConfig: restored });
             }
         }
+        await persistUnlockedSession(owner, await cachedLockConfig());
         return { unlocked: true };
     } catch (error) {
-        if (error.code !== "WRONG_PASSKEY" || !online) throw error;
+        if (error.code !== "WRONG_PASSKEY" || !serverAvailable) throw error;
         // Local passkey wrong. If the server accepts it, the passkey was changed on another device.
         const server = await api("/api/v1/lock/verify", { method: "POST", body: JSON.stringify({ passcode }) }).catch(() => null);
         if (server?.unlocked) throw coded("NEEDS_RECOVERY", "Your passkey was changed on another device. Enter your recovery key to update this one.");
         throw error;
     }
 }
-async function lockVault() { LockstepVault.lock(await subject()); }
+async function lockVault() { await clearUnlockedSession(await subject()); }
 async function resetVault() {
     const owner = await subject();
     await token();

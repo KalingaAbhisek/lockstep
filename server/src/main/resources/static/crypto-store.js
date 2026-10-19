@@ -248,6 +248,27 @@
     function lock(subject) { unlockedMasters.delete(subject); }
     function isUnlocked(subject) { return unlockedMasters.has(subject); }
 
+    function exportSessionKey(subject) {
+        const master = unlockedMasters.get(subject);
+        if (!master) return null;
+        return { raw: master.raw, currentVersion: master.currentVersion, createdAt: master.createdAt };
+    }
+
+    async function restoreSessionKey(subject, snapshot) {
+        if (!snapshot?.raw || !Number.isInteger(snapshot.currentVersion)) return false;
+        const record = await get("keys", masterKeyId(subject));
+        if (!record || Number(record.currentVersion) !== snapshot.currentVersion) return false;
+        const raw = base64ToBytes(snapshot.raw);
+        if (raw.byteLength !== 32) return false;
+        unlockedMasters.set(subject, {
+            raw: snapshot.raw,
+            key: await importMaster(raw),
+            currentVersion: snapshot.currentVersion,
+            createdAt: snapshot.createdAt || record.createdAt
+        });
+        return true;
+    }
+
     function validateUuidV4(value, field = "ID") {
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
             throw new Error(field + " must be a UUIDv4.");
@@ -567,8 +588,8 @@
     }
 
     globalThis.LockstepVault = {
-        addOtpUri, clearSubject, configurePassphrase, deleteEntry, exportRecoveryKey, exportText, exportWrappedKey, importRecoveryKey, isUnlocked, keyState, listEntries, lock,
-        localEncryptedEntries, otpAuthUri, parseOtpAuthUri, pendingCount, rotateKey, rotateMasterKey, synchronize, synchronizeWrappedKey, unlock, updateEntry
+        addOtpUri, clearSubject, configurePassphrase, deleteEntry, exportRecoveryKey, exportSessionKey, exportText, exportWrappedKey, importRecoveryKey, isUnlocked, keyState, listEntries, lock,
+        localEncryptedEntries, otpAuthUri, parseOtpAuthUri, pendingCount, restoreSessionKey, rotateKey, rotateMasterKey, synchronize, synchronizeWrappedKey, unlock, updateEntry
     };
 })();
 

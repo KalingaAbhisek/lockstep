@@ -7,7 +7,7 @@ const state = {
     subject: localStorage.getItem("authsync.lastSubject"),
     refreshing: false, editing: false, originals: new Map(), pinnedIds: new Set(), entryOrder: [], dragId: null,
     theme: localStorage.getItem("authsync.theme") || "light", confirmationResolve: null, toastTimer: null, toastHideTimer: null, confirmPasskey: "",
-    lockConfig: { enabled: false, timeoutSeconds: 0 }, inactivityTimer: null, lastActivityAt: Date.now(),
+    lockConfig: { enabled: false, timeoutSeconds: 0 }, inactivityTimer: null, lastActivityAt: Date.now(), lastPointerActivityAt: 0,
     offline: false, pendingChanges: 0, lockSetupRequired: false, lastSyncError: null,
     restoreAuthorized: sessionStorage.getItem("authsync.restoreAuthorized") === "1", restoreReturnView: "signed-out",
     displayName: localStorage.getItem("authsync.displayName") || ""
@@ -97,7 +97,7 @@ function bindEvents() {
     el("settings-recovery-export").addEventListener("click", exportRecoveryKey);
     el("settings-key-rotate").addEventListener("click", rotateEncryptionKey);
     el("settings-signout").addEventListener("click", () => { el("settings-dialog").close(); signOut(true); });
-    el("settings-privacy").addEventListener("click", () => { window.location.href = "/privacy.html"; });
+    el("settings-privacy").addEventListener("click", () => { window.open("/privacy.html", "_blank", "noopener"); });
     el("settings-lock").addEventListener("click", openLockSettings);
     el("lock-form").addEventListener("submit", saveLockSettings);
     el("lock-dialog").addEventListener("cancel", event => { if (state.lockSetupRequired) event.preventDefault(); });
@@ -138,12 +138,15 @@ function bindEvents() {
     setInterval(tick, 100);
     setInterval(() => { if((state.token || state.subject) && !el("signed-in").classList.contains("hidden") && !document.hidden) loadEntries(); }, 30000);
     ["pointerdown","keydown","touchstart","scroll"].forEach((eventName)=>document.addEventListener(eventName,recordUserActivity,{passive:true}));
+    document.addEventListener("pointermove",recordPointerActivity,{passive:true});
     document.addEventListener("visibilitychange",()=>{
-        if(document.hidden){stopInactivityWatch();if(state.lockConfig.enabled&&!el("signed-in").classList.contains("hidden"))lockApp();}
+        if(document.hidden){stopInactivityWatch();if(state.lockConfig.enabled&&state.lockConfig.timeoutSeconds===0&&!el("signed-in").classList.contains("hidden"))lockApp();}
         else{enforceInactivityLock();if((state.token||state.subject)&&!el("signed-in").classList.contains("hidden"))loadEntries();}
     });
     window.addEventListener("online", () => {
-        if ((state.token || state.subject) && !el("signed-in").classList.contains("hidden")) loadEntries(true);
+        if (!state.token && !state.subject) return;
+        if (!el("signed-in").classList.contains("hidden")) loadEntries(true);
+        else syncVault().catch(() => null);
     });
     window.addEventListener("focus",enforceInactivityLock);window.addEventListener("pageshow",enforceInactivityLock);document.addEventListener("resume",enforceInactivityLock);
     setInterval(enforceInactivityLock,15000);
@@ -199,19 +202,15 @@ async function showApp(afterLogin = false) {
             await LockstepVault.synchronizeWrappedKey(ownerSubject(), sharedConfig.wrappedKey);
             localStorage.setItem(`authsync.lock.${ownerSubject()}`, JSON.stringify(sharedConfig));
             if (await LockstepVault.keyState(ownerSubject()) === "none") {
-                if (!afterLogin && !state.restoreAuthorized) {
-                    signOut(false, "Local vault data was cleared. Sign in with Google again.");
-                    return;
-                }
                 state.restoreAuthorized = true;
                 sessionStorage.setItem("authsync.restoreAuthorized", "1");
-                await syncVault();
+                await syncVault().catch(() => null);
                 showRestore();
                 return;
             }
         }
     } catch (error) {
-        if (error.code === "SESSION_EXPIRED" || state.token) {
+        if (error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_MISSING") {
             signOut(false);
             toast(error.message, true);
             return;
@@ -230,7 +229,16 @@ async function showApp(afterLogin = false) {
         state.lockConfig = { ...state.lockConfig, enabled: true };
     }
     updateLockSummary();
-    if (state.lockConfig.enabled) { showLocked(); return; }
+    if (await LockstepVault.keyState(ownerSubject()) === "none" && state.lockConfig.enabled) {
+        state.restoreAuthorized = true;
+        sessionStorage.setItem("authsync.restoreAuthorized", "1");
+        showRestore();
+        return;
+    }
+    if (state.lockConfig.enabled) {
+        if (await resumeUnlockedSession()) { await showUnlockedApp(); return; }
+        showLocked(); return;
+    }
     if (!lockConfigLoadedFromServer) {
         signOut(false);
         toast("Sign in again to create your app lock.", true);
@@ -352,6 +360,7 @@ function signOut(showMessage = false, message = "Signed out securely") {
     if (el("settings-dialog").open) el("settings-dialog").close();
     if (state.subject) LockstepVault.lock(state.subject);
     const unlockKey = state.token || state.subject ? lockTimestampKey() : null;
+    const sessionKey = state.token || state.subject ? sessionKeyStorageKey() : null;
     state.token = null;
     state.subject = null;
     state.entries = [];
@@ -363,6 +372,7 @@ function signOut(showMessage = false, message = "Signed out securely") {
     localStorage.removeItem("authsync.displayName");
     state.displayName = "";
     if (unlockKey) sessionStorage.removeItem(unlockKey);
+    if (sessionKey) sessionStorage.removeItem(sessionKey);
     window.google?.accounts?.id?.disableAutoSelect();
     el("signed-out").classList.remove("hidden");
     if (showMessage) animateIn(el("signed-out"));
@@ -790,15 +800,62 @@ function parseBackup(text) {
 function nextDefaultAccountName(items){const highest=items.reduce((maximum,item)=>{const match=/^Account (\d+)$/.exec(item.accountName||"");return match?Math.max(maximum,Number(match[1])):maximum;},0);return `Account ${highest+1}`;}
 
 function lockTimestampKey(){return `authsync.unlocked.${ownerSubject()}`;}
+function sessionKeyStorageKey(){return `authsync.session-key.${ownerSubject()}`;}
+function persistUnlockedSession(){
+    if(!state.lockConfig.enabled||state.lockConfig.timeoutSeconds<=0){sessionStorage.removeItem(sessionKeyStorageKey());return;}
+    const snapshot=LockstepVault.exportSessionKey(ownerSubject());
+    if(snapshot)sessionStorage.setItem(sessionKeyStorageKey(),JSON.stringify(snapshot));
+}
+async function resumeUnlockedSession(){
+    if(!state.lockConfig.enabled||state.lockConfig.timeoutSeconds<=0)return false;
+    const lastActivity=Number(sessionStorage.getItem(lockTimestampKey())||0);
+    if(!lastActivity||Date.now()-lastActivity>=state.lockConfig.timeoutSeconds*1000){clearUnlockedSession();return false;}
+    if(!LockstepVault.isUnlocked(ownerSubject())){
+        try{
+            const snapshot=JSON.parse(sessionStorage.getItem(sessionKeyStorageKey())||"null");
+            if(!await LockstepVault.restoreSessionKey(ownerSubject(),snapshot)){clearUnlockedSession();return false;}
+        }catch{clearUnlockedSession();return false;}
+    }
+    state.lastActivityAt=lastActivity;
+    return true;
+}
+function clearUnlockedSession(){
+    if(state.token||state.subject){sessionStorage.removeItem(lockTimestampKey());sessionStorage.removeItem(sessionKeyStorageKey());}
+}
 function updateLockSummary(){const labels={0:"Locks whenever the app is reopened",60:"Locks after 1 minute of inactivity",300:"Locks after 5 minutes of inactivity",900:"Locks after 15 minutes of inactivity",1800:"Locks after 30 minutes of inactivity"};el("lock-summary").textContent=state.lockConfig.enabled?(labels[state.lockConfig.timeoutSeconds]||"Passkey enabled"):"Protect codes with a passkey";}
-function recordUserActivity(){if((!state.token&&!state.subject)||el("signed-in").classList.contains("hidden"))return;state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));scheduleInactivityLock();}
+function recordPointerActivity(){const now=Date.now();if(now-state.lastPointerActivityAt<1000)return;state.lastPointerActivityAt=now;recordUserActivity();}
+function recordUserActivity(){if((!state.token&&!state.subject)||el("signed-in").classList.contains("hidden"))return;state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();scheduleInactivityLock();}
 function scheduleInactivityLock(){stopInactivityWatch();if(!state.lockConfig.enabled||state.lockConfig.timeoutSeconds<=0)return;const remaining=Math.max(0,state.lockConfig.timeoutSeconds*1000-(Date.now()-state.lastActivityAt));state.inactivityTimer=setTimeout(enforceInactivityLock,remaining);}
 function stopInactivityWatch(){if(state.inactivityTimer!==null){clearTimeout(state.inactivityTimer);state.inactivityTimer=null;}}
 function enforceInactivityLock(){if((!state.token&&!state.subject)||!state.lockConfig.enabled||state.lockConfig.timeoutSeconds<=0)return;const stored=Number(sessionStorage.getItem(lockTimestampKey())||state.lastActivityAt||0);if(Date.now()-stored>=state.lockConfig.timeoutSeconds*1000)lockApp();else{state.lastActivityAt=stored;scheduleInactivityLock();}}
-function lockApp(){LockstepVault.lock(ownerSubject());sessionStorage.removeItem(lockTimestampKey());showLocked();}
-async function unlockApp(event){event.preventDefault();hideInlineError("unlock-error");try{const passcode=el("unlock-passcode").value;const serverConfig=await api("/api/v1/lock");await LockstepVault.synchronizeWrappedKey(ownerSubject(),serverConfig.wrappedKey);await LockstepVault.unlock(ownerSubject(),passcode);state.lockConfig=serverConfig;if(!serverConfig.enabled){const wrappedKey=await LockstepVault.exportWrappedKey(ownerSubject());state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:state.lockConfig.timeoutSeconds||0,wrappedKey})});}{const localWrapped=await LockstepVault.exportWrappedKey(ownerSubject());const remoteAt=Number(serverConfig.wrappedKey?.wrappedAt||serverConfig.wrappedKey?.createdAt||0);if(localWrapped&&Number(localWrapped.wrappedAt||localWrapped.createdAt||0)>remoteAt){state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:serverConfig.timeoutSeconds||0,wrappedKey:localWrapped})});}}localStorage.setItem(`authsync.lock.${ownerSubject()}`,JSON.stringify(state.lockConfig));el("unlock-passcode").value="";sessionStorage.setItem(lockTimestampKey(),String(Date.now()));await showUnlockedApp();toast("Vault unlocked");}catch(error){if(error.code==="KEY_MISSING")signOut(false,"Local vault data was cleared. Sign in with Google again.");else if(error.code==="SESSION_EXPIRED")signOut(false,error.message);else showInlineError("unlock-error",error.message);}}
+function lockApp(){LockstepVault.lock(ownerSubject());clearUnlockedSession();showLocked();}
+async function unlockApp(event){
+    event.preventDefault();hideInlineError("unlock-error");
+    try{
+        const owner=ownerSubject(),passcode=el("unlock-passcode").value;
+        let serverConfig=null;
+        try{serverConfig=await api("/api/v1/lock");await LockstepVault.synchronizeWrappedKey(owner,serverConfig.wrappedKey);}
+        catch(error){if(error.code==="SESSION_EXPIRED")throw error;}
+        if(!serverConfig){
+            try{serverConfig=JSON.parse(localStorage.getItem(`authsync.lock.${owner}`));}catch{/* handled below */}
+        }
+        if(!serverConfig)throw new Error("Connect once before unlocking this vault offline.");
+        await LockstepVault.unlock(owner,passcode);
+        state.lockConfig={...serverConfig,enabled:true};
+        if(serverConfig.wrappedKey){
+            const localWrapped=await LockstepVault.exportWrappedKey(owner);
+            const remoteAt=Number(serverConfig.wrappedKey.wrappedAt||serverConfig.wrappedKey.createdAt||0);
+            if(localWrapped&&Number(localWrapped.wrappedAt||localWrapped.createdAt||0)>remoteAt){
+                state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:serverConfig.timeoutSeconds||0,wrappedKey:localWrapped})}).catch(()=>state.lockConfig);
+            }
+        }
+        localStorage.setItem(`authsync.lock.${owner}`,JSON.stringify(state.lockConfig));
+        el("unlock-passcode").value="";state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();
+        await showUnlockedApp();toast("Vault unlocked");
+    }catch(error){if(error.code==="KEY_MISSING")signOut(false,"Local vault data was cleared. Sign in with Google again.");else if(error.code==="SESSION_EXPIRED")signOut(false,error.message);else showInlineError("unlock-error",error.message);}
+}
 async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=await api("/api/v1/lock");state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||0);el("lock-dialog-title").textContent=required?"Create your app lock":"Change your app lock";el("lock-dialog-description").textContent=required?"Create a synchronized passkey before adding or viewing authenticator accounts. It cannot be recovered.":"Choose a new passkey for your web app and extension.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){toast(error.message,true);}}
-async function saveLockSettings(event){event.preventDefault();hideInlineError("lock-error");const passcode=el("lock-passcode").value;if(passcode.length<4){showInlineError("lock-error","Passkey must contain at least 4 characters.");return;}if(passcode!==el("lock-confirm").value){showInlineError("lock-error","Passkeys do not match.");return;}try{await LockstepVault.configurePassphrase(ownerSubject(),passcode);const wrappedKey=await LockstepVault.exportWrappedKey(ownerSubject());state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:Number(el("lock-timeout").value),wrappedKey})});sessionStorage.setItem(lockTimestampKey(),String(Date.now()));el("lock-passcode").value="";el("lock-confirm").value="";state.lockSetupRequired=false;updateLockSummary();el("lock-dialog").close();el("lock-now").classList.remove("hidden");toast("Vault passkey synchronized");await loadEntries(true);}catch(error){showInlineError("lock-error",error.message);}}
+async function saveLockSettings(event){event.preventDefault();hideInlineError("lock-error");const passcode=el("lock-passcode").value;if(passcode.length<4){showInlineError("lock-error","Passkey must contain at least 4 characters.");return;}if(passcode!==el("lock-confirm").value){showInlineError("lock-error","Passkeys do not match.");return;}try{await LockstepVault.configurePassphrase(ownerSubject(),passcode);const wrappedKey=await LockstepVault.exportWrappedKey(ownerSubject());state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:Number(el("lock-timeout").value),wrappedKey})});state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();el("lock-passcode").value="";el("lock-confirm").value="";state.lockSetupRequired=false;updateLockSummary();el("lock-dialog").close();el("lock-now").classList.remove("hidden");toast("Vault passkey synchronized");scheduleInactivityLock();await loadEntries(true);}catch(error){showInlineError("lock-error",error.message);}}
 
 function confirmAction({title,message,label="Continue",iconName="shield",danger=false,passkey=false}) {
     const dialog=el("confirm-dialog"); el("confirm-title").textContent=title; el("confirm-message").textContent=message; el("confirm-accept").textContent=label;
