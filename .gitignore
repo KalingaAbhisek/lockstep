@@ -1,0 +1,15 @@
+.idea/
+.vscode/
+*.iml
+target/
+**/target/
+.env
+.env.invalid-key-backup
+data/
+*.log
+secrets/
+*-firebase-adminsdk-*.json
+service-account*.json
+.vendor-temp/
+_backup_before_restore/
+

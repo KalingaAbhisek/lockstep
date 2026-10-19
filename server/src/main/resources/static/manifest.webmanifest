@@ -1,0 +1,10 @@
+{
+  "name": "Lockstep",
+  "short_name": "Lockstep",
+  "description": "Secure authenticator codes, always in step.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7fc",
+  "theme_color": "#f4f7fc"
+}
+

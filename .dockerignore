@@ -1,0 +1,11 @@
+.git
+.gitignore
+.idea
+.vscode
+.env
+secrets
+dist
+extension
+**/target
+**/*.log
+_backup_before_restore

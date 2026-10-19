@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Lockstep</title><link rel="stylesheet" href="popup.css"><script src="vendor/jsQR.js" defer></script><script src="vendor/qrcode.js" defer></script><script src="popup.js" defer></script></head>
+<body>
+<svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.2 2.8h-.4a1.8 1.8 0 0 0-1.8 1.8v.2a1.8 1.8 0 0 1-.9 1.5l-.4.2a1.8 1.8 0 0 1-1.8 0l-.2-.1a1.8 1.8 0 0 0-2.4.7l-.2.4a1.8 1.8 0 0 0 .7 2.4l.2.1a1.8 1.8 0 0 1 .9 1.6v.5a1.8 1.8 0 0 1-.9 1.6l-.2.1a1.8 1.8 0 0 0-.7 2.4l.2.4a1.8 1.8 0 0 0 2.4.7l.2-.1a1.8 1.8 0 0 1 1.8 0l.4.2a1.8 1.8 0 0 1 .9 1.5v.2a1.8 1.8 0 0 0 1.8 1.8h.4a1.8 1.8 0 0 0 1.8-1.8v-.2a1.8 1.8 0 0 1 .9-1.5l.4-.2a1.8 1.8 0 0 1 1.8 0l.2.1a1.8 1.8 0 0 0 2.4-.7l.2-.4a1.8 1.8 0 0 0-.7-2.4l-.2-.1a1.8 1.8 0 0 1-.9-1.6v-.5a1.8 1.8 0 0 1 .9-1.6l.2-.1a1.8 1.8 0 0 0 .7-2.4l-.2-.4a1.8 1.8 0 0 0-2.4-.7l-.2.1a1.8 1.8 0 0 1-1.8 0l-.4-.2a1.8 1.8 0 0 1-.9-1.5v-.2a1.8 1.8 0 0 0-1.8-1.8Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6"/></symbol>
+    <symbol id="icon-back" viewBox="0 0 24 24"><path d="m14.5 5-7 7 7 7M8 12h11" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></symbol>
+    <symbol id="icon-scan" viewBox="0 0 24 24"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></symbol>
+    <symbol id="icon-edit" viewBox="0 0 24 24"><path d="m4 20 4.2-1 10.5-10.5a2.1 2.1 0 0 0-3-3L5.2 16 4 20ZM14.5 6.5l3 3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2"/></symbol>
+    <symbol id="icon-qr" viewBox="0 0 24 24"><path d="M3.5 3.5h6.5V10H3.5zM14 3.5h6.5V10H14zM3.5 14h6.5v6.5H3.5z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.7"/><path d="M5.7 5.7h2.1v2.1H5.7zM16.2 5.7h2.1v2.1h-2.1zM5.7 16.2h2.1v2.1H5.7zM14 14h2.7v2.7H14zM18.5 14h2v4h-2zM14 18.5h2.7v2H14zM18.5 18.5h2v2h-2z" fill="currentColor"/></symbol>
+    <symbol id="icon-pin" viewBox="0 0 24 24"><path d="M8.2 3.2h7.6l-1.1 5.2 3.2 3.1v1.9H13v6.9l-1 1.5-1-1.5v-6.9H6.1v-1.9l3.2-3.1-1.1-5.2Z" fill="currentColor"/></symbol>
+    <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.2"/></symbol>
+    <symbol id="icon-grip" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></g></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.9"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 2.8 19.2 5.5v5.7c0 4.5-2.9 8-7.2 9.9-4.3-1.9-7.2-5.4-7.2-9.9V5.5L12 2.8Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.7"/><path d="M8.2 13.8h2.4v-2.4H13V9h2.8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></symbol>
+    <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10M12 14v2.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></symbol>
+    <symbol id="icon-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 4a8 8 0 0 0 0 16V4Z" fill="currentColor"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M19 7v4h-4M5 17v-4h4M18 11a6.5 6.5 0 0 0-11-3L5 10M6 13a6.5 6.5 0 0 0 11 3l2-2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></symbol>
+    <symbol id="icon-export" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 13v5.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V13" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></symbol>
+    <symbol id="icon-import" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 13v5.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V13" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></symbol>
+    <symbol id="icon-signout" viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></symbol>
+</svg>
+<header class="toolbar">
+    <div class="nav-tools">
+        <button id="settings" class="tool" aria-label="Settings" title="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg></button>
+        <button id="settings-back" class="tool hidden" aria-label="Back to authenticator" title="Back"><svg aria-hidden="true"><use href="#icon-back"></use></svg></button>
+    </div>
+    <h1 id="view-title">Lockstep</h1>
+    <div id="normal-tools" class="tools hidden">
+        <button id="lock-now" class="tool hidden" aria-label="Lock authenticator" title="Lock"><svg aria-hidden="true"><use href="#icon-lock"></use></svg></button>
+        <button id="scan" class="tool" aria-label="Scan QR code" title="Scan QR code">
+            <svg aria-hidden="true"><use href="#icon-scan"></use></svg>
+        </button>
+        <button id="edit" class="tool" aria-label="Edit" title="Edit">
+            <svg aria-hidden="true"><use href="#icon-edit"></use></svg>
+        </button>
+    </div>
+    <div id="edit-tools" class="tools hidden">
+        <button id="add" class="tool" aria-label="Add account" title="Add account"><svg aria-hidden="true"><use href="#icon-plus"></use></svg></button>
+        <button id="done" class="tool done" aria-label="Done editing" title="Done"><svg aria-hidden="true"><use href="#icon-check"></use></svg></button>
+    </div>
+</header>
+<main>
+    <div id="auth-view">
+        <p id="status" role="status"></p>
+        <section id="initializing" class="startup-state" aria-label="Opening Lockstep">
+            <div class="startup-mark"><svg aria-hidden="true"><use href="#icon-shield"></use></svg></div>
+            <div class="startup-lines" aria-hidden="true"><span></span><span></span></div>
+        </section>
+        <section id="signed-out" class="empty-state hidden">
+            <div class="key" aria-hidden="true">●</div>
+            <p>Sign in to display your accounts.</p>
+            <button id="login" class="google-signin-btn">
+                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615Z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332Z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58Z"/></svg>
+                <span>Sign in with Google</span>
+            </button>
+        </section>
+        <section id="signed-in" class="hidden">
+            <p id="welcome-message" class="welcome-message"></p>
+            <div id="entries"></div>
+            <div id="empty" class="empty-state hidden">
+                <div class="key" aria-hidden="true">●</div>
+                <p>No accounts to display. Add your first<br>account now.</p>
+                <button id="empty-add" class="text-action">Add account</button>
+            </div>
+        </section>
+        <section id="restore" class="lock-screen hidden">
+            <button id="restore-back" class="restore-back-icon" type="button" aria-label="Back" title="Back"><svg aria-hidden="true"><use href="#icon-back"></use></svg></button>
+            <div class="lock-hero"><svg aria-hidden="true"><use href="#icon-lock"></use></svg></div>
+            <h2>Restore your vault</h2><p id="restore-message">This device doesn't have your vault key. Enter your recovery key and a passkey for this device.</p>
+            <form id="restore-form">
+                <div class="restore-step">
+                    <p class="restore-step-title"><span>1</span>Provide your recovery key</p>
+                    <label class="restore-field"><span>Paste recovery key</span><input id="restore-key" type="password" autocomplete="off" placeholder="LS2-M-…" required></label>
+                    <p class="restore-alternative">Or load your downloaded recovery-key file</p>
+                    <button id="restore-key-file-button" class="restore-file-button" type="button"><svg aria-hidden="true"><use href="#icon-import"></use></svg><span>Choose recovery key file</span></button>
+                    <input id="restore-key-file" class="hidden" type="file" accept=".txt,text/plain">
+                    <p id="restore-file-name" class="restore-file-name hidden"></p>
+                </div>
+                <div class="restore-step restore-passkey-step">
+                    <p class="restore-step-title"><span>2</span>Create a new passkey</p>
+                    <label class="restore-field"><span>New passkey</span><input id="restore-passcode" type="password" minlength="4" maxlength="128" autocomplete="new-password" placeholder="Minimum 4 characters" required></label>
+                    <label class="restore-field"><span>Confirm new passkey</span><input id="restore-passcode-confirm" type="password" minlength="4" maxlength="128" autocomplete="new-password" placeholder="Enter it again" required></label>
+                </div>
+                <button class="restore-primary" type="submit">Restore vault</button>
+            </form>
+            <p id="restore-error" class="form-error"></p>
+            <div class="restore-footer-actions">
+                <button id="restore-reset" class="text-action danger-text" type="button">Reset</button>
+                <button id="restore-signout" class="text-action" type="button">Sign out</button>
+            </div>
+        </section>
+        <section id="locked" class="lock-screen hidden">
+            <div class="lock-hero"><svg aria-hidden="true"><use href="#icon-lock"></use></svg></div>
+            <h2>Authenticator locked</h2><p>Enter your passkey to reveal your verification codes.</p>
+            <form id="unlock-form"><input id="unlock-passcode" type="password" minlength="4" maxlength="128" autocomplete="current-password" placeholder="Passkey" required><button type="submit">Unlock</button></form>
+            <p id="unlock-error" class="form-error"></p>
+            <button id="forgot-passkey" class="text-action" type="button">Forgot passkey?</button>
+        </section>
+    </div>
+    <section id="settings-view" class="settings-view hidden">
+        <div class="settings-group authenticated-setting hidden">
+            <button id="settings-lock" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-lock"></use></svg></span><span><strong>App lock</strong><small id="lock-summary">Protect codes with a passkey</small></span><span class="chevron"><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>
+        </div>
+        <div class="settings-group">
+            <button class="settings-row" data-settings-detail="advisor-detail"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-shield"></use></svg></span><span>Security advisor</span><span class="chevron"><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>
+            <div id="advisor-detail" class="settings-detail hidden"><strong>Your authenticator data</strong><br>TOTP secrets are encrypted and codes are generated locally on this device. The server stores only AES-256-GCM ciphertext and cannot decrypt your accounts. Keep your recovery key private: it is required to open the vault on another device. QR images are decoded and generated locally. App Lock remains an extra privacy screen rather than a replacement for device security.</div>
+            <button class="settings-row" data-settings-detail="permissions-detail"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-lock"></use></svg></span><span>Permissions</span><span class="chevron"><svg aria-hidden="true"><use href="#icon-chevron"></use></svg></span></button>
+            <div id="permissions-detail" class="settings-detail hidden"><strong>Why Lockstep needs access</strong><br><b>Active tab and scripting:</b> capture the visible page and display the selection tool only after you choose Scan QR code.<br><b>Identity:</b> complete Google sign-in securely.<br><b>Storage:</b> retain the temporary session, theme, local pins, and lock timing on this device.<br><b>Local API access:</b> synchronize your accounts with the Lockstep server. Lockstep does not request browsing-history access.</div>
+        </div>
+        <div class="settings-group">
+            <div class="theme-setting">
+                <span class="settings-icon"><svg aria-hidden="true"><use href="#icon-theme"></use></svg></span>
+                <div><strong>Appearance</strong><small>Choose the extension theme</small></div>
+            </div>
+            <div class="theme-options" role="group" aria-label="Appearance">
+                <button class="theme-option" data-theme-value="system" type="button">System</button>
+                <button class="theme-option" data-theme-value="light" type="button">Light</button>
+                <button class="theme-option" data-theme-value="dark" type="button">Dark</button>
+            </div>
+        </div>
+        <div class="settings-group authenticated-setting hidden">
+            <button id="settings-export" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-export"></use></svg></span><span><strong>Export</strong><small>Download all accounts as a text file</small></span></button>
+            <button id="settings-import" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-import"></use></svg></span><span><strong>Import</strong><small>Add accounts from a text file</small></span></button>
+            <input id="backup-file" class="hidden" type="file" accept=".txt,text/plain">
+        </div>
+        <div class="settings-group authenticated-setting hidden">
+            <button id="settings-recovery-export" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-export"></use></svg></span><span><strong>Download recovery key</strong><small>Save the key required to restore your vault</small></span></button>
+            <button id="settings-key-rotate" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg></span><span><strong>Rotate encryption key</strong><small>Re-encrypt every account locally</small></span></button>
+        </div>
+        <div class="settings-group authenticated-setting hidden">
+            <button id="settings-sync" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg></span><span>Refresh synchronized accounts</span></button>
+            <button id="settings-signout" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-signout"></use></svg></span><span>Sign out</span></button>
+        </div>
+        <p id="settings-message" class="settings-message" role="status"></p>
+        <p class="settings-version">Lockstep 0.3.0</p>
+    </section>
+</main>
+<dialog id="add-dialog" class="add-method-dialog">
+    <div class="dialog-panel"><div class="dialog-heading"><div><span class="dialog-kicker">ADD ACCOUNT</span><h2>Choose a method</h2></div><button id="cancel-add" class="dialog-close" type="button"><svg><use href="#icon-close"></use></svg></button></div>
+        <div class="add-methods">
+            <button id="method-scan" type="button"><span class="method-icon"><svg><use href="#icon-scan"></use></svg></span><span><strong>Scan QR code</strong><small>Select a QR code on the current tab</small></span></button>
+            <button id="method-manual" type="button"><span class="method-icon"><svg><use href="#icon-plus"></use></svg></span><span><strong>Manual entry</strong><small>Enter the secret and account details</small></span></button>
+            <button id="method-images" type="button"><span class="method-icon"><svg><use href="#icon-qr"></use></svg></span><span><strong>Import QR images</strong><small>Choose one or more image files</small></span></button>
+            <button id="method-uris" type="button"><span class="method-icon"><svg><use href="#icon-import"></use></svg></span><span><strong>Import OTP URLs</strong><small>Paste one or more otpauth URLs</small></span></button>
+            <input id="qr-image-files" class="hidden" type="file" accept="image/*" multiple>
+        </div>
+    </div>
+</dialog>
+<dialog id="manual-dialog" class="form-dialog"><form id="manual-form">
+    <div class="dialog-heading"><div><span class="dialog-kicker">MANUAL ENTRY</span><h2>Account details</h2></div><button class="dialog-close" data-close="manual-dialog" type="button"><svg><use href="#icon-close"></use></svg></button></div>
+    <label class="form-field"><span>Issuer</span><input id="manual-issuer" maxlength="128" placeholder="Example service" required></label>
+    <label class="form-field"><span>Secret</span><input id="manual-secret" maxlength="256" autocomplete="off" placeholder="Base32 secret" required></label>
+    <details class="advanced-fields" open><summary>Advanced options</summary>
+        <label class="form-field"><span>Username (optional)</span><input id="manual-account" maxlength="256" placeholder="name@example.com"></label>
+        <label class="form-field"><span>Period in seconds</span><input id="manual-period" type="number" min="15" max="120" value="30" required></label>
+        <div class="field-grid"><label class="form-field"><span>Digits</span><select id="manual-digits"><option value="6">6</option><option value="8">8</option></select></label><label class="form-field"><span>Algorithm</span><select id="manual-algorithm"><option value="SHA1">SHA-1</option><option value="SHA256">SHA-256</option><option value="SHA512">SHA-512</option></select></label></div>
+    </details>
+    <p id="manual-error" class="form-error"></p><button class="form-primary" type="submit">Add account</button>
+</form></dialog>
+<dialog id="uri-dialog" class="form-dialog"><form id="uri-form">
+    <div class="dialog-heading"><div><span class="dialog-kicker">IMPORT URLS</span><h2>Paste OTP URLs</h2></div><button class="dialog-close" data-close="uri-dialog" type="button"><svg><use href="#icon-close"></use></svg></button></div>
+    <p>Enter one <code>otpauth://totp/…</code> URL per line. Existing accounts will not be replaced.</p>
+    <textarea id="otp-uris" rows="9" placeholder="otpauth://totp/…&#10;otpauth://totp/…" required></textarea><p id="uri-error" class="form-error"></p><button class="form-primary" type="submit">Import accounts</button>
+</form></dialog>
+<dialog id="lock-dialog" class="form-dialog"><form id="lock-form">
+    <div class="dialog-heading"><div><span class="dialog-kicker">APP LOCK</span><h2 id="lock-dialog-title">Protect your codes</h2></div><button id="lock-dialog-close" class="dialog-close" data-close="lock-dialog" type="button"><svg><use href="#icon-close"></use></svg></button></div>
+    <p id="lock-dialog-description">Your passkey derives a local wrapping key. Only the encrypted vault master key is stored on this device.</p>
+    <label class="form-field"><span>New passkey</span><input id="lock-passcode" type="password" minlength="4" maxlength="128" autocomplete="new-password" placeholder="Minimum 4 characters" required></label>
+    <label class="form-field"><span>Confirm passkey</span><input id="lock-confirm" type="password" minlength="4" maxlength="128" autocomplete="new-password" required></label>
+    <label class="form-field"><span>Lock timing</span><select id="lock-timeout"><option value="0">Whenever the app is reopened</option><option value="60">After 1 minute of inactivity</option><option value="300">After 5 minutes of inactivity</option><option value="900">After 15 minutes of inactivity</option><option value="1800">After 30 minutes of inactivity</option></select></label>
+    <p id="lock-error" class="form-error"></p><div class="lock-actions"><button class="form-primary" type="submit">Save lock</button></div>
+    </form>
+</dialog>
+<dialog id="qr-dialog" class="qr-dialog">
+    <div class="qr-dialog-content">
+        <div class="qr-dialog-heading">
+            <div><h2 id="qr-title">Authenticator QR</h2><p id="qr-account"></p></div>
+            <button id="close-qr" class="dialog-close" type="button" aria-label="Close QR code"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button>
+        </div>
+        <div class="qr-frame"><div id="qr-skeleton" class="qr-skeleton" role="status" aria-label="Generating QR code"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div><span id="qr-loading" class="hidden"></span><img id="qr-image" class="hidden" alt="Scannable authenticator QR code"></div>
+        <p class="qr-warning">Anyone who scans this QR code can generate your verification codes.</p>
+    </div>
+</dialog>
+<dialog id="confirm-dialog" class="confirm-dialog">
+    <div class="confirm-dialog-content">
+        <div id="confirm-icon" class="confirm-dialog-icon" aria-hidden="true"><svg><use id="confirm-icon-use" href="#icon-shield"></use></svg></div>
+        <div class="confirm-dialog-copy">
+            <h2 id="confirm-title">Confirm action</h2>
+            <p id="confirm-message"></p>
+            <input id="confirm-passkey" class="confirm-passkey hidden" type="password" autocomplete="current-password" placeholder="Passkey" maxlength="128">
+        </div>
+        <div class="confirm-dialog-actions">
+            <button id="confirm-cancel" class="confirm-secondary" type="button">Cancel</button>
+            <button id="confirm-accept" class="confirm-primary" type="button">Continue</button>
+        </div>
+    </div>
+</dialog>
+</body>
+</html>
+
