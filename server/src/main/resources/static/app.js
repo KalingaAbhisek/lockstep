@@ -12,6 +12,7 @@ const state = {
     restoreAuthorized: sessionStorage.getItem("authsync.restoreAuthorized") === "1", restoreReturnView: "signed-out",
     displayName: localStorage.getItem("authsync.displayName") || ""
 };
+const cameraScanner = { stream:null, frameRequest:0, lastScanAt:0, frameCount:0, processing:false, lastValue:"", ignoreUntil:0 };
 
 function animateIn(element) {
     element.classList.remove("view-enter");
@@ -112,6 +113,10 @@ function bindEvents() {
     el("edit-add").addEventListener("click", openAdd);
     el("empty-add").addEventListener("click", openAdd);
     el("close-add").addEventListener("click", closeAdd);
+    el("open-camera").addEventListener("click", openCameraScanner);
+    el("close-camera").addEventListener("click", () => el("camera-dialog").close());
+    el("retry-camera").addEventListener("click", startCameraStream);
+    el("camera-dialog").addEventListener("close", stopCameraScanner);
     el("open-manual").addEventListener("click", () => openSubDialog("manual-dialog"));
     el("open-uris").addEventListener("click", () => openSubDialog("uri-dialog"));
     el("manual-form").addEventListener("submit", addManualEntry);
@@ -139,7 +144,7 @@ function bindEvents() {
     ["pointerdown","keydown","touchstart","scroll"].forEach((eventName)=>document.addEventListener(eventName,recordUserActivity,{passive:true}));
     document.addEventListener("pointermove",recordPointerActivity,{passive:true});
     document.addEventListener("visibilitychange",()=>{
-        if(document.hidden){stopInactivityWatch();}
+        if(document.hidden){stopInactivityWatch();if(el("camera-dialog").open)el("camera-dialog").close();}
         else{enforceInactivityLock();if((state.token||state.subject)&&!el("signed-in").classList.contains("hidden"))loadEntries();}
     });
     window.addEventListener("online", () => {
@@ -692,24 +697,142 @@ async function importOtpUrls(event) {
     try{const uris=parseBackup(el("otp-uris").value);const result=await importUris(uris);el("uri-form").reset();el("uri-dialog").close();await loadEntries(true);toast(result.failed?`${result.imported} imported; ${result.failed} failed`:`${result.imported} account${result.imported===1?"":"s"} imported`,result.failed>0);}
     catch(error){showInlineError("uri-error",error.message);}
 }
+async function openCameraScanner() {
+    closeAdd();
+    const dialog=el("camera-dialog");
+    hideInlineError("camera-error");
+    el("retry-camera").classList.add("hidden");
+    el("camera-status").textContent="Point the camera at a TOTP QR code.";
+    el("camera-starting").classList.remove("hidden");
+    dialog.showModal();
+    await startCameraStream();
+}
+
+async function startCameraStream() {
+    stopCameraScanner();
+    hideInlineError("camera-error");
+    el("retry-camera").classList.add("hidden");
+    el("camera-starting").textContent="Starting camera…";
+    el("camera-starting").classList.remove("hidden");
+    if (typeof window.jsQR !== "function") {
+        showCameraError("The QR scanner could not be loaded. Refresh the page or import a saved QR image.");
+        return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+        showCameraError("Live camera scanning is not supported in this browser. Import a saved QR image instead.");
+        return;
+    }
+    try {
+        cameraScanner.stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}});
+        if (!el("camera-dialog").open) { stopCameraScanner(); return; }
+        const video=el("camera-video");
+        video.srcObject=cameraScanner.stream;
+        await video.play();
+        cameraScanner.lastScanAt=0;cameraScanner.frameCount=0;cameraScanner.lastValue="";cameraScanner.ignoreUntil=0;
+        el("camera-starting").classList.add("hidden");
+        recordUserActivity();
+        cameraScanner.frameRequest=requestAnimationFrame(scanCameraFrame);
+    } catch (error) {
+        const denied=error?.name==="NotAllowedError"||error?.name==="SecurityError";
+        const missing=error?.name==="NotFoundError"||error?.name==="OverconstrainedError";
+        showCameraError(denied?"Camera access was blocked. Allow camera permission and try again.":missing?"No usable camera was found on this device.":"The camera could not be started. Try again or import a saved QR image.");
+    }
+}
+
+function showCameraError(message) {
+    stopCameraScanner();
+    el("camera-starting").classList.add("hidden");
+    showInlineError("camera-error",message);
+    el("retry-camera").classList.remove("hidden");
+}
+
+function stopCameraScanner() {
+    if(cameraScanner.frameRequest)cancelAnimationFrame(cameraScanner.frameRequest);
+    cameraScanner.frameRequest=0;
+    cameraScanner.stream?.getTracks().forEach(track=>track.stop());
+    cameraScanner.stream=null;cameraScanner.processing=false;
+    const video=el("camera-video");
+    if(video){video.pause();video.srcObject=null;}
+}
+
+function scanCameraFrame(timestamp) {
+    cameraScanner.frameRequest=requestAnimationFrame(scanCameraFrame);
+    if(cameraScanner.processing||timestamp-cameraScanner.lastScanAt<240||Date.now()<cameraScanner.ignoreUntil)return;
+    const video=el("camera-video");
+    if(!cameraScanner.stream||video.readyState<2||!video.videoWidth||!video.videoHeight)return;
+    cameraScanner.lastScanAt=timestamp;cameraScanner.frameCount++;
+    try {
+        const canvas=el("camera-canvas"),maxDimension=720,scale=Math.min(1,maxDimension/Math.max(video.videoWidth,video.videoHeight));
+        const width=Math.max(1,Math.round(video.videoWidth*scale)),height=Math.max(1,Math.round(video.videoHeight*scale));
+        if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
+        const context=canvas.getContext("2d",{willReadFrequently:true});
+        context.drawImage(video,0,0,canvas.width,canvas.height);
+        const pixels=context.getImageData(0,0,canvas.width,canvas.height);
+        const decoded=window.jsQR?.(pixels.data,pixels.width,pixels.height,{inversionAttempts:cameraScanner.frameCount%5===0?"attemptBoth":"dontInvert"});
+        if(decoded?.data)handleCameraResult(decoded.data);
+    } catch {
+        cameraScanner.ignoreUntil=Date.now()+500;
+    }
+}
+
+async function handleCameraResult(value) {
+    if(value===cameraScanner.lastValue&&Date.now()<cameraScanner.ignoreUntil)return;
+    cameraScanner.lastValue=value;
+    if(!value.startsWith("otpauth://totp/")){
+        el("camera-status").textContent="That QR code is not a TOTP authenticator code.";
+        cameraScanner.ignoreUntil=Date.now()+1400;
+        return;
+    }
+    cameraScanner.processing=true;cameraScanner.ignoreUntil=Number.POSITIVE_INFINITY;
+    el("camera-status").textContent="QR code found. Adding account…";
+    recordUserActivity();
+    try {
+        await addOtpUri(value);
+        el("camera-dialog").close();
+        await loadEntries(true);
+        toast("Authenticator added");
+    } catch(error) {
+        showInlineError("camera-error",error.message);
+        el("camera-status").textContent="Point the camera at a TOTP QR code.";
+        cameraScanner.processing=false;cameraScanner.ignoreUntil=Date.now()+1800;
+    }
+}
+
 async function scanQrImage(event) {
     const files = [...event.target.files]; if (!files.length) return;
     try {
+        toast(`Scanning ${files.length===1?"image":`${files.length} images`}…`,false,true);
         const uris=[];
-        for(const file of files){try{const bitmap=await createImageBitmap(file),uri=detectTotpQr(bitmap);bitmap.close();if(uri)uris.push(uri);}catch{/* reported as unreadable */}}
+        for(const file of files){let loaded;try{loaded=await loadQrImage(file);const uri=detectTotpQr(loaded.source);if(uri)uris.push(uri);}catch{/* reported as unreadable */}finally{loaded?.close();}await new Promise(requestAnimationFrame);}
         if (!uris.length) throw new Error("No TOTP QR code was found in the selected images.");
         const result=await importUris(uris),unreadable=files.length-uris.length;
         closeAdd();await loadEntries(true);toast(`${result.imported} imported${unreadable?`; ${unreadable} image${unreadable===1?"":"s"} unreadable`:""}`,unreadable>0||result.failed>0);
-    } catch (error) { showInlineError("add-error", error.message); }
+    } catch (error) { clearToast();showInlineError("add-error", error.message); }
     finally { event.target.value = ""; }
 }
 
 async function importUris(uris){let imported=0,failed=0;for(const otpAuthUri of uris){try{await addOtpUri(otpAuthUri);imported++;}catch{failed++;}}return{imported,failed};}
+async function loadQrImage(file) {
+    if(typeof createImageBitmap==="function"){
+        try{
+            const bitmap=await createImageBitmap(file,{imageOrientation:"from-image"});
+            return{source:bitmap,close:()=>bitmap.close()};
+        }catch{/* Fall through for browsers with incomplete createImageBitmap support. */}
+    }
+    const url=URL.createObjectURL(file),image=new Image();
+    try{await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error("Image could not be read."));image.src=url;});return{source:image,close:()=>URL.revokeObjectURL(url)};}
+    catch(error){URL.revokeObjectURL(url);throw error;}
+}
 function detectTotpQr(image) {
     if (typeof window.jsQR !== "function") throw new Error("The bundled QR decoder could not be loaded.");
-    const canvas = document.createElement("canvas"); canvas.width=image.width; canvas.height=image.height;
-    const context=canvas.getContext("2d",{willReadFrequently:true}); context.drawImage(image,0,0);
-    const pixels=context.getImageData(0,0,canvas.width,canvas.height), decoded=window.jsQR(pixels.data,pixels.width,pixels.height,{inversionAttempts:"attemptBoth"});
+    const sourceWidth=image.videoWidth||image.naturalWidth||image.width,sourceHeight=image.videoHeight||image.naturalHeight||image.height;
+    if(!sourceWidth||!sourceHeight)throw new Error("The image has no readable dimensions.");
+    const maxDimension=1024,scale=Math.min(1,maxDimension/Math.max(sourceWidth,sourceHeight));
+    const canvas = document.createElement("canvas"); canvas.width=Math.max(1,Math.round(sourceWidth*scale)); canvas.height=Math.max(1,Math.round(sourceHeight*scale));
+    const context=canvas.getContext("2d",{willReadFrequently:true});context.drawImage(image,0,0,sourceWidth,sourceHeight,0,0,canvas.width,canvas.height);
+    const pixels=context.getImageData(0,0,canvas.width,canvas.height);
+    let decoded=window.jsQR(pixels.data,pixels.width,pixels.height,{inversionAttempts:"dontInvert"});
+    if(!decoded)decoded=window.jsQR(pixels.data,pixels.width,pixels.height,{inversionAttempts:"attemptBoth"});
     return decoded?.data?.startsWith("otpauth://totp/") ? decoded.data : null;
 }
 
