@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Stream;
 
 @ConfigurationProperties("authsync")
 public class AuthSyncProperties {
@@ -23,11 +24,12 @@ public class AuthSyncProperties {
     }
 
     public String googleWebClientId() { return googleWebClientId; }
+    public String googleExtensionClientId() { return googleExtensionClientId; }
     public String firebaseProjectId() { return firebaseProjectId; }
     public String firebaseCredentialsPath() { return firebaseCredentialsPath; }
 
     public List<String> googleClientIds() {
-        return List.of(googleWebClientId, googleExtensionClientId).stream()
+        return Stream.of(googleWebClientId, googleExtensionClientId)
                 .filter(value -> value != null && !value.isBlank())
                 .toList();
     }

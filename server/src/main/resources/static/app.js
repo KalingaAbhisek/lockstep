@@ -2,15 +2,23 @@ const el = (id) => document.getElementById(id);
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 const EXPIRING_THRESHOLD_MILLIS = 5_000;
 const THEMES = ["light", "dark"];
+const LOCK_TIMEOUT_LABELS = new Map([
+    [300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1200,"20 minutes"],[1500,"25 minutes"],
+    [1800,"30 minutes"],[2100,"35 minutes"],[2400,"40 minutes"],[2700,"45 minutes"],[3000,"50 minutes"],
+    [3300,"55 minutes"],[3600,"1 hour"],[7200,"2 hours"],[14400,"4 hours"],[28800,"8 hours"],
+    [43200,"12 hours"],[86400,"1 day"],[172800,"2 days"],[604800,"1 week"]
+]);
 const state = {
     token: sessionStorage.getItem("authsync.idToken"), entries: [], serverOffsetMillis: 0,
     subject: localStorage.getItem("authsync.lastSubject"),
     refreshing: false, editing: false, originals: new Map(), pinnedIds: new Set(), entryOrder: [], dragId: null,
     theme: localStorage.getItem("authsync.theme") || "light", confirmationResolve: null, toastTimer: null, toastHideTimer: null, confirmPasskey: "",
-    lockConfig: { enabled: false, timeoutSeconds: 60 }, inactivityTimer: null, lastActivityAt: Date.now(), lastPointerActivityAt: 0,
+    lockConfig: { enabled: false, timeoutSeconds: 300, lockOnScreenLock: false }, inactivityTimer: null, lastActivityAt: Date.now(), lastPointerActivityAt: 0, screenLockController: null,
     offline: false, pendingChanges: 0, lockSetupRequired: false, lastSyncError: null,
     restoreAuthorized: sessionStorage.getItem("authsync.restoreAuthorized") === "1", restoreReturnView: "signed-out",
-    displayName: localStorage.getItem("authsync.displayName") || ""
+    displayName: localStorage.getItem("authsync.displayName") || "",
+    vaultEpoch: 0, vaultRequests: new AbortController(), tokenExpiryTimer: null,
+    pendingSyncTimer: null, pendingSyncRunning: false, pendingSyncRequested: false
 };
 const cameraScanner = { stream:null, frameRequest:0, lastScanAt:0, frameCount:0, processing:false, lastValue:"", ignoreUntil:0 };
 
@@ -46,10 +54,12 @@ function showLoader() {
 
 async function initialize() {
     applyTheme(THEMES.includes(state.theme) ? state.theme : "light");
+    renderConnectivityStatus(navigator.onLine);
     if (state.token) {
         const claims = tokenClaims(state.token);
         state.displayName = claims?.name || claims?.given_name || claims?.email || state.displayName;
         if (state.displayName) localStorage.setItem("authsync.displayName", state.displayName);
+        scheduleGoogleSessionExpiry();
     }
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
     bindEvents();
@@ -69,11 +79,15 @@ async function initialize() {
             renderGoogleButton();
         } catch (error) { if (!state.token && !state.subject) throw error; }
     }
+    if (state.token && navigator.onLine) await ensureAppSession().catch(() => null);
     if (state.token || state.subject) await showApp(false);
     else {
         signOut(false);
         if (!config?.googleClientId) toast("Connect once to configure Google Sign-In.", true);
     }
+    schedulePendingSync(0);
+    checkConnectivity();
+    void checkActiveSession();
     hideLoader();
 }
 
@@ -141,6 +155,7 @@ function bindEvents() {
     el("confirm-dialog").addEventListener("close", resolveConfirmation);
     setInterval(tick, 100);
     setInterval(() => { if((state.token || state.subject) && !el("signed-in").classList.contains("hidden") && !document.hidden) loadEntries(); }, 30000);
+    setInterval(()=>{checkConnectivity();void checkActiveSession();}, 10000);
     ["pointerdown","keydown","touchstart","scroll"].forEach((eventName)=>document.addEventListener(eventName,recordUserActivity,{passive:true}));
     document.addEventListener("pointermove",recordPointerActivity,{passive:true});
     document.addEventListener("visibilitychange",()=>{
@@ -148,16 +163,44 @@ function bindEvents() {
         else{enforceInactivityLock();if((state.token||state.subject)&&!el("signed-in").classList.contains("hidden"))loadEntries();}
     });
     window.addEventListener("online", () => {
-        if (!state.token && !state.subject) return;
-        if (!el("signed-in").classList.contains("hidden")) loadEntries(true);
-        else syncVault().catch(() => null);
+        checkConnectivity();
+        void checkActiveSession();
+        schedulePendingSync(0);
+        if (isVaultOperational()) loadEntries(true);
     });
+    window.addEventListener("offline",()=>{renderConnectivityStatus(false);stopPendingSyncRetry();});
     window.addEventListener("focus",enforceInactivityLock);window.addEventListener("pageshow",enforceInactivityLock);document.addEventListener("resume",enforceInactivityLock);
     setInterval(enforceInactivityLock,15000);
 }
 
 function isSecureGoogleOrigin() {
     return location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+}
+
+function renderConnectivityStatus(online) {
+    const indicator=el("connectivity-status");
+    if(!indicator)return;
+    indicator.dataset.state=online?"online":"offline";
+    indicator.querySelector(".connectivity-label").textContent=online?"Online":"Offline";
+    indicator.title=online?"Device is connected to the internet":"Device is offline";
+}
+
+function checkConnectivity() {
+    const online=navigator.onLine;
+    renderConnectivityStatus(online);
+    return online;
+}
+
+async function checkActiveSession() {
+    if(!navigator.onLine||!state.token)return;
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),5000);
+    try{
+        await ensureAppSession();
+        await authenticatedFetch("/api/v1/session",{signal:controller.signal});
+    }catch(error){
+        if(error.code==="SESSION_REVOKED")signOut(false,error.message);
+    }finally{clearTimeout(timeout);}
 }
 
 function waitForGoogle() {
@@ -180,7 +223,13 @@ async function onGoogleCredential({ credential }) {
     localStorage.setItem("authsync.lastSubject", state.subject);
     localStorage.setItem("authsync.displayName", state.displayName);
     clearToast();
-    try { await showApp(true); }
+    scheduleGoogleSessionExpiry();
+    try {
+        await registerAppSession();
+        await showApp(true);
+    } catch(error) {
+        signOut(false,error.message||"Sign-in could not be completed.");
+    }
     finally { hideLoader(); }
 }
 
@@ -193,7 +242,7 @@ async function showApp(afterLogin = false) {
             await LockstepVault.clearSubject(owner);
             localStorage.removeItem(`authsync.lock.${owner}`);
             sessionStorage.removeItem(`authsync.unlocked.${owner}`);
-            state.lockConfig = { enabled:false, timeoutSeconds:60 };
+            state.lockConfig = { enabled:false, timeoutSeconds:300, lockOnScreenLock:false };
             state.restoreAuthorized = false;
             sessionStorage.removeItem("authsync.restoreAuthorized");
             if (!afterLogin) {
@@ -208,7 +257,7 @@ async function showApp(afterLogin = false) {
             if (await LockstepVault.keyState(ownerSubject()) === "none") {
                 state.restoreAuthorized = true;
                 sessionStorage.setItem("authsync.restoreAuthorized", "1");
-                await syncVault().catch(() => null);
+                await syncVault(null,true).catch(() => null);
                 showRestore();
                 return;
             }
@@ -226,8 +275,8 @@ async function showApp(afterLogin = false) {
         lockConfigLoadedFromServer = true;
         localStorage.setItem(`authsync.lock.${ownerSubject()}`, JSON.stringify(state.lockConfig));
     } catch {
-        try { state.lockConfig = JSON.parse(localStorage.getItem(`authsync.lock.${ownerSubject()}`)) || { enabled:false, timeoutSeconds:60 }; }
-        catch { state.lockConfig = { enabled:false, timeoutSeconds:60 }; }
+        try { state.lockConfig = JSON.parse(localStorage.getItem(`authsync.lock.${ownerSubject()}`)) || { enabled:false, timeoutSeconds:300, lockOnScreenLock:false }; }
+        catch { state.lockConfig = { enabled:false, timeoutSeconds:300, lockOnScreenLock:false }; }
     }
     state.lockConfig = normalizeLockConfig(state.lockConfig);
     if (await LockstepVault.keyState(ownerSubject()) === "wrapped" && !state.lockConfig.enabled) {
@@ -246,7 +295,7 @@ async function showApp(afterLogin = false) {
     }
     if (!lockConfigLoadedFromServer) {
         signOut(false);
-        toast("Sign in again to create your app lock.", true);
+        toast("Sign in again to create lock protection.", true);
         return;
     }
     await showUnlockedApp(false);
@@ -333,7 +382,7 @@ async function restoreVault(event) {
         await syncVault();
         const version = await LockstepVault.importRecoveryKey(ownerSubject(), recoveryKey, passcode);
         const wrappedKey = await LockstepVault.exportWrappedKey(ownerSubject());
-        state.lockConfig = await api("/api/v1/lock", { method:"PUT", body:JSON.stringify({ passcode, timeoutSeconds:60, wrappedKey }) });
+        state.lockConfig = await api("/api/v1/lock", { method:"PUT", body:JSON.stringify({ passcode, timeoutSeconds:300, lockOnScreenLock:false, wrappedKey }) });
         localStorage.setItem(`authsync.lock.${ownerSubject()}`, JSON.stringify(state.lockConfig));
         state.restoreAuthorized = false;
         sessionStorage.removeItem("authsync.restoreAuthorized");
@@ -356,12 +405,17 @@ async function resetVault() {
         await LockstepVault.clearSubject(owner);
         localStorage.removeItem(`authsync.lock.${owner}`);
         sessionStorage.removeItem(`authsync.unlocked.${owner}`);
-        signOut(false, "Vault reset. Sign in again to create a new app lock.");
+        signOut(false, "Vault reset. Sign in again to create lock protection.");
     } catch (error) { showInlineError("restore-error", error.message); }
 }
 
 function signOut(showMessage = false, message = "Signed out securely") {
+    stopScreenLockWatch();
     stopInactivityWatch();
+    stopPendingSyncRetry();
+    cancelVaultOperations();
+    closeVaultSurfaces();
+    clearTimeout(state.tokenExpiryTimer);state.tokenExpiryTimer=null;
     if (el("settings-dialog").open) el("settings-dialog").close();
     if (state.subject) LockstepVault.lock(state.subject);
     const unlockKey = state.token || state.subject ? lockTimestampKey() : null;
@@ -392,20 +446,43 @@ function signOut(showMessage = false, message = "Signed out securely") {
 }
 
 async function authenticatedFetch(path, options = {}) {
+    const appSession=appSessionToken();
     const response = await fetch(path, {
         ...options, cache: "no-store",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}`, ...options.headers }
+        signal: options.signal || state.vaultRequests.signal,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}`, "X-Lockstep-Client":"web", ...(appSession?{"X-Lockstep-Session":appSession}:{}), ...options.headers }
     });
-    if (response.status === 401) {
-        const error = new Error("Session expired. Sign in with Google again.");
-        error.code = "SESSION_EXPIRED";
-        throw error;
-    }
     if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Request failed (${response.status})`);
+        const error = new Error(body.error || (response.status === 401 ? "Session expired. Sign in with Google again." : `Request failed (${response.status})`));
+        error.code = body.code || (response.status === 401 ? "SESSION_EXPIRED" : "REQUEST_FAILED");
+        if(error.code==="SESSION_REVOKED")signOut(false,error.message);
+        throw error;
     }
     return response;
+}
+
+function appSessionStorageKey(subject=ownerSubject()) { return `authsync.appSession.web.${subject}`; }
+function appSessionToken() {
+    try{return localStorage.getItem(appSessionStorageKey())||"";}catch{return "";}
+}
+async function ensureAppSession() {
+    return appSessionToken() || registerAppSession();
+}
+async function registerAppSession() {
+    if(!state.token)throw new Error("Sign in with Google first.");
+    const response=await fetch("/api/v1/session",{
+        method:"POST",cache:"no-store",
+        headers:{"Content-Type":"application/json",Authorization:`Bearer ${state.token}`,"X-Lockstep-Client":"web"}
+    });
+    const body=await response.json().catch(()=>({}));
+    if(!response.ok||!body.sessionToken){
+        const error=new Error(body.error||(response.status===401?"Google session expired. Sign in again.":`Request failed (${response.status})`));
+        error.code=body.code||(response.status===401?"SESSION_EXPIRED":"REQUEST_FAILED");
+        throw error;
+    }
+    localStorage.setItem(appSessionStorageKey(),body.sessionToken);
+    return body.sessionToken;
 }
 
 async function api(path, options = {}) {
@@ -419,6 +496,27 @@ function ownerSubject() {
     return subject;
 }
 
+function vaultLockedError() { const error=new Error("Vault locked. Unlock it to continue.");error.code="VAULT_LOCKED";return error; }
+function isVaultLockedError(error) { return error?.code==="VAULT_LOCKED"||error?.name==="AbortError"&&!isVaultOperational(); }
+function isVaultOperational() { return Boolean(state.subject&&LockstepVault.isUnlocked(state.subject)&&el("locked").classList.contains("hidden")&&!el("signed-in").classList.contains("hidden")); }
+function beginVaultOperation() { enforceInactivityLock();if(!isVaultOperational())throw vaultLockedError();return state.vaultEpoch; }
+function assertVaultOperation(epoch) { if(epoch!==state.vaultEpoch||!isVaultOperational())throw vaultLockedError(); }
+function cancelVaultOperations(abortRequests = true) { state.vaultEpoch++;if(abortRequests){state.vaultRequests.abort();state.vaultRequests=new AbortController();}state.refreshing=false; }
+function closeVaultSurfaces() {
+    stopCameraScanner();clearDragState();state.editing=false;
+    ["add-dialog","manual-dialog","uri-dialog","settings-dialog","qr-dialog","camera-dialog","confirm-dialog","lock-dialog"].forEach(id=>{const dialog=el(id);if(dialog?.open)dialog.close("cancel");});
+    ["qr-file","backup-file"].forEach(id=>{const input=el(id);if(input)input.value="";});
+    el("view-tools")?.classList.remove("hidden");el("edit-tools")?.classList.add("hidden");document.body.classList.remove("editing");clearToast();
+}
+function scheduleGoogleSessionExpiry() {
+    clearTimeout(state.tokenExpiryTimer);state.tokenExpiryTimer=null;
+    const expiresAt=Number(tokenClaims(state.token)?.exp||0)*1000;
+    if(!expiresAt)return;
+    const remaining=expiresAt-Date.now();
+    if(remaining<=0){signOut(false,"Google session expired. Sign in again.");return;}
+    state.tokenExpiryTimer=setTimeout(()=>signOut(false,"Google session expired. Sign in again."),remaining);
+}
+
 function vaultTransport() {
     return {
         list: () => api("/api/v1/entries"),
@@ -427,9 +525,47 @@ function vaultTransport() {
     };
 }
 
-async function syncVault() {
+async function flushPendingVault(owner = state.subject) {
+    if(!owner||!state.token)return null;
+    try{return await LockstepVault.flushOutbox(owner,vaultTransport());}
+    catch(error){if(error.code==="SESSION_EXPIRED")signOut(false,error.message);return null;}
+}
+
+function stopPendingSyncRetry() {
+    if(state.pendingSyncTimer!==null)clearTimeout(state.pendingSyncTimer);
+    state.pendingSyncTimer=null;
+    state.pendingSyncRequested=false;
+}
+
+function schedulePendingSync(delay = 0) {
+    if(state.pendingSyncRunning){state.pendingSyncRequested=true;return;}
+    if(state.pendingSyncTimer!==null||!navigator.onLine||!state.subject||!state.token)return;
+    state.pendingSyncTimer=setTimeout(runPendingSyncRetry,delay);
+}
+
+async function runPendingSyncRetry() {
+    state.pendingSyncTimer=null;
+    if(state.pendingSyncRunning||!navigator.onLine||!state.subject||!state.token)return;
+    state.pendingSyncRunning=true;
+    state.pendingSyncRequested=false;
+    let pending=0;
+    try {
+        const owner=state.subject;
+        await flushPendingVault(owner);
+        pending=await LockstepVault.pendingCount(owner);
+        state.pendingChanges=pending;
+    } catch { pending=1; }
+    finally {
+        state.pendingSyncRunning=false;
+        if((pending>0||state.pendingSyncRequested)&&navigator.onLine&&state.subject&&state.token)schedulePendingSync(pending>0?10000:0);
+    }
+}
+
+async function syncVault(epoch = null, allowLockedPull = false) {
+    if(epoch!==null)assertVaultOperation(epoch);
     const owner = ownerSubject();
     const account = await api("/api/v1/account");
+    if(epoch!==null)assertVaultOperation(epoch);
     if (!account.exists) {
         await LockstepVault.clearSubject(owner);
         localStorage.removeItem(`authsync.lock.${owner}`);
@@ -437,7 +573,9 @@ async function syncVault() {
         error.code = "ACCOUNT_MISSING";
         throw error;
     }
-    return LockstepVault.synchronize(owner, vaultTransport());
+    const result=await LockstepVault.synchronize(owner, vaultTransport(),allowLockedPull);
+    if(epoch!==null)assertVaultOperation(epoch);
+    return result;
 }
 
 function renderEntrySkeleton(count = 4) {
@@ -454,14 +592,16 @@ function renderEntrySkeleton(count = 4) {
 }
 
 async function loadEntries(force = false) {
-    if (state.refreshing || state.editing && !force) return;
+    if (state.refreshing || state.editing && !force || !isVaultOperational()) return;
+    const epoch=beginVaultOperation();
     state.refreshing = true;
     const hasSkeleton = el("entries").querySelector(".entry-skel") !== null;
     const isEmpty = el("entries").innerHTML.trim() === "";
     if (hasSkeleton || isEmpty) renderEntrySkeleton();
     try {
-        try { await syncVault(); state.offline = false; state.lastSyncError = null; }
+        try { await syncVault(epoch); assertVaultOperation(epoch);state.offline = false; state.lastSyncError = null; }
         catch (error) {
+            if(isVaultLockedError(error))throw error;
             if (error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_MISSING") {
                 signOut(false, error.message);
                 return;
@@ -469,15 +609,16 @@ async function loadEntries(force = false) {
             state.offline = true;
             state.lastSyncError = error.message;
         }
-        state.pendingChanges = await LockstepVault.pendingCount(ownerSubject());
+        assertVaultOperation(epoch);state.pendingChanges = await LockstepVault.pendingCount(ownerSubject());assertVaultOperation(epoch);
         const loaded = await LockstepVault.listEntries(ownerSubject());
+        assertVaultOperation(epoch);
         state.entries = loaded.map((entry) => ({ ...entry, pinned: state.pinnedIds.has(entry.id) }));
         sortLocalPins();
         state.serverOffsetMillis = 0;
         renderEntries();
         if (state.offline) el("account-summary").textContent += ` · Sync failed: ${state.lastSyncError || "Offline"}${state.pendingChanges ? ` · ${state.pendingChanges} change${state.pendingChanges === 1 ? "" : "s"} pending` : ""}`;
     } catch (error) {
-        toast(error.message, true);
+        if(!isVaultLockedError(error))toast(error.message, true);
         if (hasSkeleton || isEmpty) el("entries").innerHTML = "";
     } finally {
         state.refreshing = false;
@@ -521,6 +662,7 @@ function tick() {
 }
 
 async function handleEntryClick(event) {
+    try{beginVaultOperation();}catch{return;}
     const button = event.target.closest("[data-action]");
     const card = event.target.closest(".entry");
     if (!button || !card) return;
@@ -538,6 +680,7 @@ async function handleEntryClick(event) {
 }
 
 async function togglePin(id) {
+    try{beginVaultOperation();}catch{return;}
     syncDraftsFromInputs();
     const positions = capturePositions();
     const entry = state.entries.find((item) => item.id === id);
@@ -567,6 +710,7 @@ function saveLocalPins() { localStorage.setItem(pinStorageKey(), JSON.stringify(
 function saveLocalOrder() { state.entryOrder = state.entries.map((entry) => entry.id); localStorage.setItem(orderStorageKey(), JSON.stringify(state.entryOrder)); }
 
 function setEditing(value) {
+    if(value){try{beginVaultOperation();}catch{return;}}
     state.editing = value;
     if (value) state.originals = new Map(state.entries.map((entry) => [entry.id, { ...entry }]));
     el("view-tools").classList.toggle("hidden", value);
@@ -575,24 +719,32 @@ function setEditing(value) {
 }
 
 async function saveEdits() {
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     syncDraftsFromInputs();
     if (state.entries.some((entry) => !entry.issuer.trim() || !entry.accountName.trim())) { toast("Issuer and account name are required", true); return; }
     el("save-edits").disabled = true;
     try {
         for (const entry of state.entries) {
+            assertVaultOperation(epoch);
             const original = state.originals.get(entry.id);
             if (!original || original.issuer !== entry.issuer.trim() || original.accountName !== entry.accountName.trim()) {
-                await LockstepVault.updateEntry(ownerSubject(), entry.id, entry.issuer.trim(), entry.accountName.trim());
+                const owner=ownerSubject();
+                await LockstepVault.updateEntry(owner, entry.id, entry.issuer.trim(), entry.accountName.trim());
+                schedulePendingSync(0);
+                if(!isVaultOperational()){void flushPendingVault(owner);throw vaultLockedError();}
+                assertVaultOperation(epoch);
             }
         }
+        assertVaultOperation(epoch);
         saveLocalOrder();
-        await syncVault().catch(() => null);
+        await syncVault(epoch).catch(error=>{if(isVaultLockedError(error))throw error;});
+        assertVaultOperation(epoch);
         state.editing = false;
         el("view-tools").classList.remove("hidden");
         el("edit-tools").classList.add("hidden");
         await loadEntries(true);
         toast("Changes saved");
-    } catch (error) { toast(error.message, true); }
+    } catch (error) { if(!isVaultLockedError(error))toast(error.message, true); }
     finally { el("save-edits").disabled = false; }
 }
 
@@ -608,6 +760,7 @@ function syncDraftsFromInputs() {
 }
 
 function moveEntry(id, direction) {
+    try{beginVaultOperation();}catch{return;}
     syncDraftsFromInputs();
     const from = state.entries.findIndex((entry) => entry.id === id);
     const to = from + direction;
@@ -621,6 +774,7 @@ function moveEntry(id, direction) {
 }
 
 function handleDragStart(event) {
+    try{beginVaultOperation();}catch{event.preventDefault();return;}
     const handle = event.target.closest(".drag-handle");
     const card = handle?.closest(".entry");
     if (!state.editing || !card) { event.preventDefault(); return; }
@@ -659,25 +813,37 @@ function animateReorder(previous, highlightedId) {
 }
 
 async function deleteEntry(entry) {
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     const confirmed = await confirmAction({ title:"Remove account?", message:`${entry.issuer} (${entry.accountName}) will be removed from every synchronized device.`, label:"Remove", iconName:"trash", danger:true });
     if (!confirmed) return;
     try {
-        await LockstepVault.deleteEntry(ownerSubject(), entry.id);
-        await syncVault().catch(() => null);
+        assertVaultOperation(epoch);
+        const owner=ownerSubject();
+        await LockstepVault.deleteEntry(owner, entry.id);
+        schedulePendingSync(0);
+        if(!isVaultOperational()){void flushPendingVault(owner);throw vaultLockedError();}
+        assertVaultOperation(epoch);
+        await syncVault(epoch).catch(error=>{if(isVaultLockedError(error))throw error;});
+        assertVaultOperation(epoch);
         state.pinnedIds.delete(entry.id); saveLocalPins();
         state.entries = state.entries.filter((item) => item.id !== entry.id);
         saveLocalOrder();
         renderEntries(); toast("Account removed");
-    } catch (error) { toast(error.message, true); }
+    } catch (error) { if(!isVaultLockedError(error))toast(error.message, true); }
 }
 
-function openAdd() { hideInlineError("add-error"); el("add-dialog").showModal(); }
+function openAdd() { try{beginVaultOperation();}catch{return;}hideInlineError("add-error"); el("add-dialog").showModal(); }
 function closeAdd() { hideInlineError("add-error"); el("add-dialog").close(); }
-function openSubDialog(id) { el("add-dialog").close(); el(id).showModal(); }
+function openSubDialog(id) { try{beginVaultOperation();}catch{return;}el("add-dialog").close(); el(id).showModal(); }
 
 async function addOtpUri(otpAuthUri) {
-    await LockstepVault.addOtpUri(ownerSubject(), otpAuthUri);
-    await syncVault().catch(() => null);
+    const epoch=beginVaultOperation(),owner=ownerSubject();
+    await LockstepVault.addOtpUri(owner, otpAuthUri);
+    schedulePendingSync(0);
+    if(!isVaultOperational()){void flushPendingVault(owner);throw vaultLockedError();}
+    assertVaultOperation(epoch);
+    await syncVault(epoch).catch(error=>{if(isVaultLockedError(error))throw error;});
+    assertVaultOperation(epoch);
 }
 
 async function addManualEntry(event) {
@@ -688,16 +854,17 @@ async function addManualEntry(event) {
     const period=Number(el("manual-period").value);
     const query=new URLSearchParams({secret,issuer,algorithm:el("manual-algorithm").value,digits:el("manual-digits").value,period:String(period)});
     const uri=`otpauth://totp/${encodeURIComponent(`${issuer}:${account}`)}?${query}`;
-    try{await addOtpUri(uri);el("manual-form").reset();el("manual-period").value="30";el("manual-dialog").close();await loadEntries(true);toast("Authenticator added");}
-    catch(error){showInlineError("manual-error",error.message);}
+    try{await addOtpUri(uri);if(!isVaultOperational())return;el("manual-form").reset();el("manual-period").value="30";el("manual-dialog").close();await loadEntries(true);if(isVaultOperational())toast("Authenticator added");}
+    catch(error){if(!isVaultLockedError(error))showInlineError("manual-error",error.message);}
 }
 
 async function importOtpUrls(event) {
     event.preventDefault(); hideInlineError("uri-error");
-    try{const uris=parseBackup(el("otp-uris").value);const result=await importUris(uris);el("uri-form").reset();el("uri-dialog").close();await loadEntries(true);toast(result.failed?`${result.imported} imported; ${result.failed} failed`:`${result.imported} account${result.imported===1?"":"s"} imported`,result.failed>0);}
-    catch(error){showInlineError("uri-error",error.message);}
+    try{beginVaultOperation();const uris=parseBackup(el("otp-uris").value);const result=await importUris(uris);if(!isVaultOperational())return;el("uri-form").reset();el("uri-dialog").close();await loadEntries(true);if(isVaultOperational())toast(result.failed?`${result.imported} imported; ${result.failed} failed`:`${result.imported} account${result.imported===1?"":"s"} imported`,result.failed>0);}
+    catch(error){if(!isVaultLockedError(error))showInlineError("uri-error",error.message);}
 }
 async function openCameraScanner() {
+    try{beginVaultOperation();}catch{return;}
     closeAdd();
     const dialog=el("camera-dialog");
     hideInlineError("camera-error");
@@ -709,6 +876,7 @@ async function openCameraScanner() {
 }
 
 async function startCameraStream() {
+    try{beginVaultOperation();}catch{if(el("camera-dialog").open)el("camera-dialog").close();return;}
     stopCameraScanner();
     hideInlineError("camera-error");
     el("retry-camera").classList.add("hidden");
@@ -788,10 +956,12 @@ async function handleCameraResult(value) {
     recordUserActivity();
     try {
         await addOtpUri(value);
+        if(!isVaultOperational())return;
         el("camera-dialog").close();
         await loadEntries(true);
         toast("Authenticator added");
     } catch(error) {
+        if(isVaultLockedError(error))return;
         showInlineError("camera-error",error.message);
         el("camera-status").textContent="Point the camera at a TOTP QR code.";
         cameraScanner.processing=false;cameraScanner.ignoreUntil=Date.now()+1800;
@@ -800,18 +970,19 @@ async function handleCameraResult(value) {
 
 async function scanQrImage(event) {
     const files = [...event.target.files]; if (!files.length) return;
+    let epoch;try{epoch=beginVaultOperation();}catch{event.target.value="";return;}
     try {
         toast(`Scanning ${files.length===1?"image":`${files.length} images`}…`,false,true);
         const uris=[];
-        for(const file of files){let loaded;try{loaded=await loadQrImage(file);const uri=detectTotpQr(loaded.source);if(uri)uris.push(uri);}catch{/* reported as unreadable */}finally{loaded?.close();}await new Promise(requestAnimationFrame);}
+        for(const file of files){assertVaultOperation(epoch);let loaded;try{loaded=await loadQrImage(file);assertVaultOperation(epoch);const uri=detectTotpQr(loaded.source);if(uri)uris.push(uri);}catch(error){if(isVaultLockedError(error))throw error;/* reported as unreadable */}finally{loaded?.close();}await new Promise(requestAnimationFrame);}
         if (!uris.length) throw new Error("No TOTP QR code was found in the selected images.");
         const result=await importUris(uris),unreadable=files.length-uris.length;
         closeAdd();await loadEntries(true);toast(`${result.imported} imported${unreadable?`; ${unreadable} image${unreadable===1?"":"s"} unreadable`:""}`,unreadable>0||result.failed>0);
-    } catch (error) { clearToast();showInlineError("add-error", error.message); }
+    } catch (error) { clearToast();if(!isVaultLockedError(error))showInlineError("add-error", error.message); }
     finally { event.target.value = ""; }
 }
 
-async function importUris(uris){let imported=0,failed=0;for(const otpAuthUri of uris){try{await addOtpUri(otpAuthUri);imported++;}catch{failed++;}}return{imported,failed};}
+async function importUris(uris){let imported=0,failed=0;for(const otpAuthUri of uris){try{await addOtpUri(otpAuthUri);imported++;}catch(error){if(isVaultLockedError(error))throw error;failed++;}}return{imported,failed};}
 async function loadQrImage(file) {
     if(typeof createImageBitmap==="function"){
         try{
@@ -837,24 +1008,27 @@ function detectTotpQr(image) {
 }
 
 async function showQr(entry) {
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     el("qr-title").textContent = entry.issuer; el("qr-account").textContent = entry.accountName;
     el("qr-loading").textContent = ""; el("qr-loading").classList.add("hidden"); el("qr-skeleton").classList.remove("hidden"); el("qr-image").classList.add("hidden"); el("qr-dialog").showModal();
     try {
         const uri = await LockstepVault.otpAuthUri(ownerSubject(), entry.id);
+        assertVaultOperation(epoch);
         if (!globalThis.QRCode?.toDataURL) throw new Error("The local QR generator is unavailable.");
-        el("qr-image").src = await globalThis.QRCode.toDataURL(uri, { errorCorrectionLevel: "M", margin: 2, width: 320 });
+        const source=await globalThis.QRCode.toDataURL(uri, { errorCorrectionLevel: "M", margin: 2, width: 320 });assertVaultOperation(epoch);el("qr-image").src = source;
         el("qr-skeleton").classList.add("hidden"); el("qr-image").classList.remove("hidden"); el("qr-loading").classList.add("hidden");
-    } catch (error) { el("qr-skeleton").classList.add("hidden"); el("qr-loading").textContent = error.message; el("qr-loading").classList.remove("hidden"); }
+    } catch (error) { if(!isVaultLockedError(error)){el("qr-skeleton").classList.add("hidden"); el("qr-loading").textContent = error.message; el("qr-loading").classList.remove("hidden");} }
 }
 function clearQrDialog() { const source=el("qr-image").src; if(source.startsWith("blob:")) URL.revokeObjectURL(source); el("qr-skeleton").classList.remove("hidden"); el("qr-loading").classList.add("hidden"); el("qr-image").removeAttribute("src"); }
 
 async function exportBackup() {
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     const confirmed = await confirmAction({ title:"Export authenticator backup?", message:"The text file contains the secrets needed to generate every code. Store it somewhere private and never share it.", label:"Export backup", iconName:"export" });
     if (!confirmed) return;
     try {
-        const text=await LockstepVault.exportText(ownerSubject()), url=URL.createObjectURL(new Blob([text], { type:"text/plain;charset=utf-8" })), link=document.createElement("a");
+        assertVaultOperation(epoch);const text=await LockstepVault.exportText(ownerSubject());assertVaultOperation(epoch);const url=URL.createObjectURL(new Blob([text], { type:"text/plain;charset=utf-8" })), link=document.createElement("a");
         link.href=url; link.download=`lockstep-totp-backup-${new Date().toISOString().slice(0,10)}.txt`; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); toast("Backup exported");
-    } catch(error) { toast(error.message,true); }
+    } catch(error) { if(!isVaultLockedError(error))toast(error.message,true); }
 }
 
 function downloadRecoveryKeyFile(value) {
@@ -868,20 +1042,23 @@ function downloadRecoveryKeyFile(value) {
 }
 
 async function exportRecoveryKey() {
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     try {
         const config = await api("/api/v1/lock");
+        assertVaultOperation(epoch);
         if (await LockstepVault.synchronizeWrappedKey(ownerSubject(), config.wrappedKey)) {
             state.lockConfig = config;
             lockApp();
             toast("The synchronized passkey changed. Unlock again before downloading the recovery key.", true);
             return;
         }
-        downloadRecoveryKeyFile(await LockstepVault.exportRecoveryKey(ownerSubject()));
+        const recoveryKey=await LockstepVault.exportRecoveryKey(ownerSubject());assertVaultOperation(epoch);downloadRecoveryKeyFile(recoveryKey);
         toast("Recovery key downloaded. Store it somewhere private.");
-    } catch (error) { toast(error.message, true); }
+    } catch (error) { if(!isVaultLockedError(error))toast(error.message, true); }
 }
 
 async function rotateEncryptionKey() {
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     const settingsWasOpen = el("settings-dialog").open;
     if (settingsWasOpen) el("settings-dialog").close();
     const confirmed = await confirmAction({ title:"Rotate encryption key?", message:"A brand-new master key is generated and every account is re-encrypted with it. A NEW recovery key will be downloaded; your old recovery key stops working. Other devices pick up the new key the next time they unlock. Enter your passkey to continue.", label:"Rotate key", iconName:"lock", passkey:true });
@@ -891,29 +1068,37 @@ async function rotateEncryptionKey() {
     toast("Rotating encryption key and synchronizing accounts…", false, true);
     let result = null;
     try {
+        assertVaultOperation(epoch);
         const owner = ownerSubject();
-        await syncVault(); // must be online and fully synced before the key changes
+        await syncVault(epoch); // must be online and fully synced before the key changes
+        assertVaultOperation(epoch);
         const remaining = await LockstepVault.pendingCount(owner);
+        assertVaultOperation(epoch);
         if (remaining > 0) throw new Error(`Cannot rotate while ${remaining} change${remaining === 1 ? " is" : "s are"} pending synchronization.`);
         result = await LockstepVault.rotateMasterKey(owner, passkey);
+        assertVaultOperation(epoch);
         downloadRecoveryKeyFile(result.recoveryKey); // save the new key before any network call can fail
         // Publish the new wrapped key BEFORE the re-encrypted entries so other devices can always decrypt what they pull.
-        state.lockConfig = await api("/api/v1/lock", { method:"PUT", body:JSON.stringify({ passcode:passkey, timeoutSeconds:state.lockConfig.timeoutSeconds || 60, wrappedKey:result.wrappedKey }) });
+        state.lockConfig = await api("/api/v1/lock", { method:"PUT", body:JSON.stringify({ passcode:passkey, timeoutSeconds:state.lockConfig.timeoutSeconds || 300, lockOnScreenLock:Boolean(state.lockConfig.lockOnScreenLock), wrappedKey:result.wrappedKey }) });
+        assertVaultOperation(epoch);
         localStorage.setItem(`authsync.lock.${owner}`, JSON.stringify(state.lockConfig));
-        await syncVault();
+        await syncVault(epoch);
+        assertVaultOperation(epoch);
         await loadEntries(true);
         toast(`Key rotated to version ${result.version}. New recovery key downloaded; store it somewhere private.`);
     } catch (error) {
+        if(isVaultLockedError(error))return;
         if (result) toast(`Key rotated on this device (version ${result.version}) and the new recovery key was downloaded, but syncing failed: ${error.message} Unlock again to retry.`, true);
         else toast(error.message, true);
     }
 }
 async function importBackup(event) {
     const file=event.target.files?.[0]; event.target.value=""; if(!file)return;
+    let epoch;try{epoch=beginVaultOperation();}catch{return;}
     try {
-        const uris=parseBackup(await file.text()); toast(`Importing ${uris.length} account${uris.length===1?"":"s"}…`);const {imported,failed}=await importUris(uris);
+        const uris=parseBackup(await file.text());assertVaultOperation(epoch);toast(`Importing ${uris.length} account${uris.length===1?"":"s"}…`);const {imported,failed}=await importUris(uris);assertVaultOperation(epoch);
         await loadEntries(true); toast(failed?`${imported} imported; ${failed} failed`:`${imported} account${imported===1?"":"s"} imported`,failed>0);
-    } catch(error){toast(error.message,true);}
+    } catch(error){if(!isVaultLockedError(error))toast(error.message,true);}
 }
 function parseBackup(text) {
     const uris=text.split(/\r?\n/).map((line)=>line.trim()).filter((line)=>line&&!line.startsWith("#"));
@@ -924,7 +1109,7 @@ function nextDefaultAccountName(items){const highest=items.reduce((maximum,item)
 
 function lockTimestampKey(){return `authsync.unlocked.${ownerSubject()}`;}
 function sessionKeyStorageKey(){return `authsync.session-key.${ownerSubject()}`;}
-function normalizeLockConfig(config){return{...(config||{}),enabled:Boolean(config?.enabled),timeoutSeconds:Number(config?.timeoutSeconds)>0?Number(config.timeoutSeconds):60};}
+function normalizeLockConfig(config){const timeout=Number(config?.timeoutSeconds);return{...(config||{}),enabled:Boolean(config?.enabled),timeoutSeconds:LOCK_TIMEOUT_LABELS.has(timeout)?timeout:300,lockOnScreenLock:Boolean(config?.lockOnScreenLock)};}
 function persistUnlockedSession(){
     if(!state.lockConfig.enabled){sessionStorage.removeItem(sessionKeyStorageKey());return;}
     const snapshot=LockstepVault.exportSessionKey(ownerSubject());
@@ -946,13 +1131,34 @@ async function resumeUnlockedSession(){
 function clearUnlockedSession(){
     if(state.token||state.subject){sessionStorage.removeItem(lockTimestampKey());sessionStorage.removeItem(sessionKeyStorageKey());}
 }
-function updateLockSummary(){const labels={60:"Locks after 1 minute of inactivity",300:"Locks after 5 minutes of inactivity",900:"Locks after 15 minutes of inactivity",1800:"Locks after 30 minutes of inactivity"};el("lock-summary").textContent=state.lockConfig.enabled?(labels[state.lockConfig.timeoutSeconds]||"Locks after inactivity"):"Protect codes with a passkey";}
+function stopScreenLockWatch(){if(state.screenLockController){state.screenLockController.abort();state.screenLockController=null;}}
+async function syncScreenLockWatch(){
+    stopScreenLockWatch();
+    if(!state.lockConfig.enabled||!state.lockConfig.lockOnScreenLock||!state.subject||!("IdleDetector" in window))return;
+    const controller=new AbortController();state.screenLockController=controller;
+    try{
+        const detector=new IdleDetector();
+        const lockForScreen=()=>{if(detector.screenState==="locked"&&state.lockConfig.lockOnScreenLock&&LockstepVault.isUnlocked(state.subject))lockApp();};
+        detector.addEventListener("change",lockForScreen);
+        await detector.start({threshold:60000,signal:controller.signal});
+        lockForScreen();
+    }catch(error){if(error.name!=="AbortError")state.screenLockController=null;}
+}
+function updateLockSummary(){const duration=LOCK_TIMEOUT_LABELS.get(state.lockConfig.timeoutSeconds)||"inactivity";el("lock-summary").textContent=state.lockConfig.enabled?`Locks after ${duration}${state.lockConfig.lockOnScreenLock?" or when the screen locks":""}`:"Protect codes with a passkey";void syncScreenLockWatch();}
 function recordPointerActivity(){const now=Date.now();if(now-state.lastPointerActivityAt<1000)return;state.lastPointerActivityAt=now;recordUserActivity();}
 function recordUserActivity(){if((!state.token&&!state.subject)||el("signed-in").classList.contains("hidden"))return;state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();scheduleInactivityLock();}
 function scheduleInactivityLock(){stopInactivityWatch();if(!state.lockConfig.enabled)return;const remaining=Math.max(0,state.lockConfig.timeoutSeconds*1000-(Date.now()-state.lastActivityAt));state.inactivityTimer=setTimeout(enforceInactivityLock,remaining);}
 function stopInactivityWatch(){if(state.inactivityTimer!==null){clearTimeout(state.inactivityTimer);state.inactivityTimer=null;}}
-function enforceInactivityLock(){if((!state.token&&!state.subject)||!state.lockConfig.enabled)return;const stored=Number(sessionStorage.getItem(lockTimestampKey())||state.lastActivityAt||0);if(Date.now()-stored>=state.lockConfig.timeoutSeconds*1000)lockApp();else{state.lastActivityAt=stored;scheduleInactivityLock();}}
-function lockApp(){LockstepVault.lock(ownerSubject());clearUnlockedSession();showLocked();}
+function enforceInactivityLock(){if((!state.token&&!state.subject)||!state.lockConfig.enabled||!el("locked").classList.contains("hidden"))return;const stored=Number(sessionStorage.getItem(lockTimestampKey())||state.lastActivityAt||0);if(Date.now()-stored>=state.lockConfig.timeoutSeconds*1000)lockApp();else{state.lastActivityAt=stored;scheduleInactivityLock();}}
+function lockApp(){
+    if(!state.token&&!state.subject)return;
+    cancelVaultOperations(false);
+    LockstepVault.lock(ownerSubject());
+    clearUnlockedSession();
+    closeVaultSurfaces();
+    showLocked();
+    schedulePendingSync(0);
+}
 async function unlockApp(event){
     event.preventDefault();hideInlineError("unlock-error");
     try{
@@ -970,7 +1176,7 @@ async function unlockApp(event){
             const localWrapped=await LockstepVault.exportWrappedKey(owner);
             const remoteAt=Number(serverConfig.wrappedKey.wrappedAt||serverConfig.wrappedKey.createdAt||0);
             if(localWrapped&&Number(localWrapped.wrappedAt||localWrapped.createdAt||0)>remoteAt){
-                state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:state.lockConfig.timeoutSeconds||60,wrappedKey:localWrapped})}).catch(()=>state.lockConfig);
+                state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:state.lockConfig.timeoutSeconds||300,lockOnScreenLock:Boolean(state.lockConfig.lockOnScreenLock),wrappedKey:localWrapped})}).catch(()=>state.lockConfig);
             }
         }
         localStorage.setItem(`authsync.lock.${owner}`,JSON.stringify(state.lockConfig));
@@ -978,8 +1184,27 @@ async function unlockApp(event){
         await showUnlockedApp();toast("Vault unlocked");
     }catch(error){if(error.code==="KEY_MISSING")signOut(false,"Local vault data was cleared. Sign in with Google again.");else if(error.code==="SESSION_EXPIRED")signOut(false,error.message);else showInlineError("unlock-error",error.message);}
 }
-async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=normalizeLockConfig(await api("/api/v1/lock"));state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||60);el("lock-dialog-title").textContent=required?"Create your app lock":"Change your app lock";el("lock-dialog-description").textContent=required?"Create a synchronized passkey before adding or viewing authenticator accounts. It cannot be recovered.":"Choose a new passkey for your web app and extension.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){toast(error.message,true);}}
-async function saveLockSettings(event){event.preventDefault();hideInlineError("lock-error");const passcode=el("lock-passcode").value;if(passcode.length<4){showInlineError("lock-error","Passkey must contain at least 4 characters.");return;}if(passcode!==el("lock-confirm").value){showInlineError("lock-error","Passkeys do not match.");return;}try{await LockstepVault.configurePassphrase(ownerSubject(),passcode);const wrappedKey=await LockstepVault.exportWrappedKey(ownerSubject());state.lockConfig=await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:Number(el("lock-timeout").value),wrappedKey})});state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();el("lock-passcode").value="";el("lock-confirm").value="";state.lockSetupRequired=false;updateLockSummary();el("lock-dialog").close();el("lock-now").classList.remove("hidden");toast("Vault passkey synchronized");scheduleInactivityLock();await loadEntries(true);}catch(error){showInlineError("lock-error",error.message);}}
+async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=normalizeLockConfig(await api("/api/v1/lock"));state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||300);el("lock-on-screen-lock").checked=Boolean(state.lockConfig.lockOnScreenLock);el("lock-dialog-title").textContent=required?"Create lock protection":"Change lock protection";el("lock-dialog-description").textContent=required?"Create a synchronized passkey before adding or viewing authenticator accounts. It cannot be recovered.":"Choose a new passkey and when Lockstep should lock.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){if(!isVaultLockedError(error))toast(error.message,true);}}
+async function saveLockSettings(event){
+    event.preventDefault();hideInlineError("lock-error");
+    const lockOnScreenLock=el("lock-on-screen-lock").checked;
+    if(lockOnScreenLock){
+        if(!("IdleDetector" in window)){showInlineError("lock-error","Screen-lock detection is not supported by this browser.");return;}
+        try{if(await IdleDetector.requestPermission()!=="granted"){showInlineError("lock-error","Allow screen-lock detection to enable this option.");return;}}
+        catch{showInlineError("lock-error","Screen-lock detection could not be enabled in this browser.");return;}
+    }
+    let epoch=null;try{if(state.lockConfig.enabled)epoch=beginVaultOperation();}catch{return;}
+    const passcode=el("lock-passcode").value;
+    if(passcode.length<4){showInlineError("lock-error","Passkey must contain at least 4 characters.");return;}
+    if(passcode!==el("lock-confirm").value){showInlineError("lock-error","Passkeys do not match.");return;}
+    try{
+        await LockstepVault.configurePassphrase(ownerSubject(),passcode);if(epoch!==null)assertVaultOperation(epoch);
+        const wrappedKey=await LockstepVault.exportWrappedKey(ownerSubject());if(epoch!==null)assertVaultOperation(epoch);
+        state.lockConfig=normalizeLockConfig(await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:Number(el("lock-timeout").value),lockOnScreenLock,wrappedKey})}));
+        if(epoch!==null)assertVaultOperation(epoch);state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();
+        el("lock-passcode").value="";el("lock-confirm").value="";state.lockSetupRequired=false;updateLockSummary();el("lock-dialog").close();el("lock-now").classList.remove("hidden");toast("Lock protection saved");scheduleInactivityLock();await loadEntries(true);
+    }catch(error){if(!isVaultLockedError(error))showInlineError("lock-error",error.message);}
+}
 
 function confirmAction({title,message,label="Continue",iconName="shield",danger=false,passkey=false}) {
     const dialog=el("confirm-dialog"); el("confirm-title").textContent=title; el("confirm-message").textContent=message; el("confirm-accept").textContent=label;

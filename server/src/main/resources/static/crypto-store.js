@@ -4,8 +4,32 @@
     const DB_VERSION = 1;
     const WRAP_ITERATIONS = 600000;
     const unlockedMasters = new Map();
+    const lockGenerations = new Map();
+    const activeWriteTransactions = new Map();
+    const outboxFlushes = new Map();
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+
+    function lockGeneration(subject) { return lockGenerations.get(subject) || 0; }
+    function operationTicket(subject, requireUnlocked = true) {
+        if(requireUnlocked&&!unlockedMasters.has(subject))throw coded("VAULT_LOCKED","Vault locked. Unlock it to continue.");
+        return lockGeneration(subject);
+    }
+    function assertOperationTicket(subject, ticket, requireUnlocked = true) {
+        if(lockGeneration(subject)!==ticket||requireUnlocked&&!unlockedMasters.has(subject))throw coded("VAULT_LOCKED","Vault locked. Unlock it to continue.");
+    }
+    function acceptedMutation(subject) {
+        const master=unlockedMasters.get(subject);
+        if(!master)throw coded("VAULT_LOCKED","Vault locked. Unlock it to continue.");
+        return master;
+    }
+    function trackWriteTransaction(subject, transaction) {
+        if(!activeWriteTransactions.has(subject))activeWriteTransactions.set(subject,new Set());
+        activeWriteTransactions.get(subject).add(transaction);
+    }
+    function untrackWriteTransaction(subject, transaction) {
+        const transactions=activeWriteTransactions.get(subject);transactions?.delete(transaction);if(transactions?.size===0)activeWriteTransactions.delete(subject);
+    }
 
     function requestResult(request) {
         return new Promise((resolve, reject) => {
@@ -138,7 +162,7 @@
         const existing = await get("keys", masterKeyId(subject));
         if (existing) throw new Error("Vault is locked. Enter your passkey to continue.");
         const legacy = await get("keys", keyId(subject, 1));
-        if (legacy || create) throw new Error("Protect this vault with an App Lock passkey before using it.");
+        if (legacy || create) throw new Error("Protect this vault with a Lockstep passkey before using it.");
         return null;
     }
 
@@ -161,6 +185,7 @@
     }
 
     async function configurePassphrase(subject, passphrase) {
+        const ticket=operationTicket(subject,false);
         requirePassphrase(passphrase);
         const persisted = await get("keys", masterKeyId(subject));
         let master = unlockedMasters.get(subject);
@@ -171,7 +196,8 @@
             try {
                 await unlock(subject, passphrase);
                 master = unlockedMasters.get(subject);
-            } catch {
+            } catch(error) {
+                if(error?.code==="VAULT_LOCKED")throw error;
                 throw new Error("This browser already has a protected vault. Enter its existing passkey to continue setup.");
             }
         }
@@ -183,19 +209,24 @@
             master = { raw: bytesToBase64(raw), key: await importMaster(raw), currentVersion: persisted?.currentVersion || 1, createdAt: persisted?.createdAt || Date.now() };
         }
         const raw = base64ToBytes(master.raw);
-        await put("keys", await wrappedMasterRecord(subject, raw, master.currentVersion, passphrase, master.createdAt));
+        const wrapped=await wrappedMasterRecord(subject, raw, master.currentVersion, passphrase, master.createdAt);assertOperationTicket(subject,ticket,false);
         const database = await openDatabase();
+        assertOperationTicket(subject,ticket,false);
         const transaction = database.transaction("keys", "readwrite");
-        const store = transaction.objectStore("keys");
-        for (const record of await requestResult(store.getAll())) {
-            if (record.subject === subject && record.id !== masterKeyId(subject)) store.delete(record.id);
-        }
-        await transactionDone(transaction); database.close();
+        trackWriteTransaction(subject,transaction);
+        try{
+            const store = transaction.objectStore("keys");store.put(wrapped);
+            for (const record of await requestResult(store.getAll())) {
+                if (record.subject === subject && record.id !== masterKeyId(subject)) store.delete(record.id);
+            }
+            await transactionDone(transaction);assertOperationTicket(subject,ticket,false);
+        }finally{untrackWriteTransaction(subject,transaction);database.close();}
         unlockedMasters.set(subject, master);
         return true;
     }
 
-    async function unlock(subject, passphrase) {
+    async function unlock(subject, passphrase, expectedGeneration = lockGeneration(subject)) {
+        assertOperationTicket(subject,expectedGeneration,false);
         requirePassphrase(passphrase);
         const record = await get("keys", masterKeyId(subject));
         if (!record?.wrappedMasterKey) {
@@ -211,9 +242,10 @@
                 { name: "AES-GCM", iv: base64ToBytes(record.iv), additionalData: encoder.encode(`lockstep:master-key:${subject}`), tagLength: 128 },
                 key, base64ToBytes(record.wrappedMasterKey)
             ));
-            unlockedMasters.set(subject, { raw: bytesToBase64(raw), key: await importMaster(raw), currentVersion: record.currentVersion, createdAt: record.createdAt });
+            const imported=await importMaster(raw);assertOperationTicket(subject,expectedGeneration,false);
+            unlockedMasters.set(subject, { raw: bytesToBase64(raw), key: imported, currentVersion: record.currentVersion, createdAt: record.createdAt });
             return true;
-        } catch { throw coded("WRONG_PASSKEY", "Incorrect passkey."); }
+        } catch(error) { if(error?.code==="VAULT_LOCKED")throw error;throw coded("WRONG_PASSKEY", "Incorrect passkey."); }
     }
 
     function coded(code, message) { const error = new Error(message); error.code = code; return error; }
@@ -241,11 +273,15 @@
         await put("keys", { id: masterKeyId(subject), subject, currentVersion: remote.currentVersion, createdAt: remote.createdAt,
             wrappedAt: remoteWrappedAt, wrapping: remote.wrapping, iterations: remote.iterations,
             salt: remote.salt, iv: remote.iv, wrappedMasterKey: remote.wrappedMasterKey });
-        unlockedMasters.delete(subject);
+        lock(subject);
         return true;
     }
 
-    function lock(subject) { unlockedMasters.delete(subject); }
+    function lock(subject) {
+        unlockedMasters.delete(subject);lockGenerations.set(subject,lockGeneration(subject)+1);
+        for(const transaction of activeWriteTransactions.get(subject)||[]){try{transaction.abort();}catch{/* already completed */}}
+        activeWriteTransactions.delete(subject);
+    }
     function isUnlocked(subject) { return unlockedMasters.has(subject); }
 
     function exportSessionKey(subject) {
@@ -255,14 +291,16 @@
     }
 
     async function restoreSessionKey(subject, snapshot) {
+        const ticket=operationTicket(subject,false);
         if (!snapshot?.raw || !Number.isInteger(snapshot.currentVersion)) return false;
         const record = await get("keys", masterKeyId(subject));
         if (!record || Number(record.currentVersion) !== snapshot.currentVersion) return false;
         const raw = base64ToBytes(snapshot.raw);
         if (raw.byteLength !== 32) return false;
+        const imported=await importMaster(raw);assertOperationTicket(subject,ticket,false);
         unlockedMasters.set(subject, {
             raw: snapshot.raw,
-            key: await importMaster(raw),
+            key: imported,
             currentVersion: snapshot.currentVersion,
             createdAt: snapshot.createdAt || record.createdAt
         });
@@ -374,79 +412,95 @@
         return result;
     }
 
-    async function writeEntryAndOutbox(subject, entry, operation = "PUT") {
+    async function writeEntryAndOutbox(subject, entry, operation = "PUT", ticket = operationTicket(subject)) {
+        if(ticket!==null)assertOperationTicket(subject,ticket);
         const database = await openDatabase();
+        if(ticket!==null)assertOperationTicket(subject,ticket);
         const transaction = database.transaction(["entries", "outbox"], "readwrite");
+        if(ticket!==null)trackWriteTransaction(subject,transaction);
         const stored = { ...entry, subject, storageId: storageId(subject, entry.id) };
-        if (operation === "PUT") transaction.objectStore("entries").put(stored);
-        else transaction.objectStore("entries").delete(stored.storageId);
-        transaction.objectStore("outbox").put({
-            mutationId: entry.mutationId || crypto.randomUUID(), subject, entryId: entry.id,
-            operation, payload: operation === "PUT" ? wireEntry(stored) : null, createdAt: Date.now(), attempts: 0
-        });
-        await transactionDone(transaction);
-        database.close();
+        try{
+            if (operation === "PUT") transaction.objectStore("entries").put(stored);
+            else transaction.objectStore("entries").delete(stored.storageId);
+            transaction.objectStore("outbox").put({
+                mutationId: entry.mutationId || crypto.randomUUID(), subject, entryId: entry.id,
+                operation, payload: operation === "PUT" ? wireEntry(stored) : null, createdAt: Date.now(), attempts: 0
+            });
+            await transactionDone(transaction);if(ticket!==null)assertOperationTicket(subject,ticket);
+        }finally{if(ticket!==null)untrackWriteTransaction(subject,transaction);database.close();}
         return stored;
     }
 
     async function addOtpUri(subject, uri) {
+        const master=acceptedMutation(subject);
         const parsed = parseOtpAuthUri(uri);
         const id = crypto.randomUUID();
         const mutationId = crypto.randomUUID();
-        const keyRecord = await currentKey(subject, true);
+        const keyRecord = { id:keyId(subject,master.currentVersion), subject, version:master.currentVersion,
+            key:await deriveVersionKey(master,subject,master.currentVersion), createdAt:Date.now() };
         const encrypted = await encryptSecret(subject, id, parsed.secret, keyRecord);
         const entry = {
             id, issuer: parsed.issuer, accountName: parsed.accountName, ...encrypted,
             algorithm: parsed.algorithm, digits: parsed.digits, periodSeconds: parsed.periodSeconds,
             createdAtEpochMillis: Date.now(), updatedAtEpochMillis: Date.now(), mutationId
         };
-        await writeEntryAndOutbox(subject, entry);
-        return publicEntry(subject, { ...entry, subject, storageId: storageId(subject, id) });
+        await writeEntryAndOutbox(subject, entry,"PUT",null);
+        const generated=await totp(parsed.secret,entry.algorithm,entry.digits,entry.periodSeconds);
+        return { ...wireEntry(entry), ...generated, period:entry.periodSeconds, serverEpochMillis:Date.now(), validForMillis:generated.validUntilEpochMillis-Date.now() };
     }
 
     async function updateEntry(subject, id, issuer, accountName) {
+        acceptedMutation(subject);
         validateUuidV4(id, "Entry ID");
         const entry = await get("entries", storageId(subject, id));
         if (!entry) throw new Error("Authenticator entry was not found.");
         const mutationId = crypto.randomUUID();
         const updated = { ...entry, issuer: issuer.trim(), accountName: accountName.trim(), mutationId, updatedAtEpochMillis: Date.now() };
-        await writeEntryAndOutbox(subject, updated);
-        return publicEntry(subject, updated);
+        await writeEntryAndOutbox(subject, updated,"PUT",null);
+        return wireEntry(updated);
     }
 
     async function deleteEntry(subject, id) {
+        acceptedMutation(subject);
         validateUuidV4(id, "Entry ID");
-        await writeEntryAndOutbox(subject, { id, mutationId: crypto.randomUUID() }, "DELETE");
+        await writeEntryAndOutbox(subject, { id, mutationId: crypto.randomUUID() }, "DELETE",null);
     }
 
-    async function replaceFromServer(subject, remoteEntries) {
+    async function replaceFromServer(subject, remoteEntries, ticket = null) {
+        if(ticket!==null)assertOperationTicket(subject,ticket);
         const pending = (await all("outbox")).filter(item => item.subject === subject);
+        if(ticket!==null)assertOperationTicket(subject,ticket);
         const pendingIds = new Set(pending.map(item => item.entryId));
         const database = await openDatabase();
         const transaction = database.transaction("entries", "readwrite");
-        const store = transaction.objectStore("entries");
-        const existing = (await requestResult(store.getAll())).filter(entry => entry.subject === subject);
-        const remoteIds = new Set(remoteEntries.map(entry => entry.id));
-        for (const entry of existing) {
-            if (!remoteIds.has(entry.id) && !pendingIds.has(entry.id)) store.delete(entry.storageId);
+        if(ticket!==null)trackWriteTransaction(subject,transaction);
+        try{
+            const store = transaction.objectStore("entries");
+            const existing = (await requestResult(store.getAll())).filter(entry => entry.subject === subject);
+            const remoteIds = new Set(remoteEntries.map(entry => entry.id));
+            for (const entry of existing) {
+                if (!remoteIds.has(entry.id) && !pendingIds.has(entry.id)) store.delete(entry.storageId);
+            }
+            for (const entry of remoteEntries) {
+                validateUuidV4(entry.id, "Server entry ID");
+                if (!pendingIds.has(entry.id)) store.put({ ...entry, subject, storageId: storageId(subject, entry.id) });
+            }
+            await transactionDone(transaction);if(ticket!==null)assertOperationTicket(subject,ticket);
         }
-        for (const entry of remoteEntries) {
-            validateUuidV4(entry.id, "Server entry ID");
-            if (!pendingIds.has(entry.id)) store.put({ ...entry, subject, storageId: storageId(subject, entry.id) });
-        }
-        await transactionDone(transaction);
-        database.close();
+        finally{if(ticket!==null)untrackWriteTransaction(subject,transaction);database.close();}
     }
 
-    async function removeOutbox(mutationId) {
+    async function removeOutbox(mutationId, subject = null, ticket = null) {
+        if(ticket!==null)assertOperationTicket(subject,ticket);
         const database = await openDatabase();
         const transaction = database.transaction("outbox", "readwrite");
+        if(ticket!==null)trackWriteTransaction(subject,transaction);
         transaction.objectStore("outbox").delete(mutationId);
-        await transactionDone(transaction);
-        database.close();
+        try{await transactionDone(transaction);if(ticket!==null)assertOperationTicket(subject,ticket);}
+        finally{if(ticket!==null)untrackWriteTransaction(subject,transaction);database.close();}
     }
 
-    async function synchronize(subject, transport) {
+    async function flushOutboxNow(subject, transport) {
         const queue = (await all("outbox")).filter(item => item.subject === subject).sort((a, b) => a.createdAt - b.createdAt);
         let synced = 0;
         for (const item of queue) {
@@ -455,9 +509,25 @@
             await removeOutbox(item.mutationId);
             synced++;
         }
-        const remote = await transport.list();
-        await replaceFromServer(subject, remote);
         return { synced, pending: (await all("outbox")).filter(item => item.subject === subject).length };
+    }
+
+    async function flushOutbox(subject, transport) {
+        const previous=outboxFlushes.get(subject)||Promise.resolve();
+        const current=previous.catch(()=>null).then(()=>flushOutboxNow(subject,transport));
+        outboxFlushes.set(subject,current);
+        try{return await current;}finally{if(outboxFlushes.get(subject)===current)outboxFlushes.delete(subject);}
+    }
+
+    async function synchronize(subject, transport, allowLockedPull = false) {
+        const flushed=await flushOutbox(subject,transport);
+        if(!unlockedMasters.has(subject)&&!allowLockedPull)return flushed;
+        const ticket=unlockedMasters.has(subject)?operationTicket(subject):null;
+        const remote = await transport.list();
+        if(ticket!==null)assertOperationTicket(subject,ticket);
+        await replaceFromServer(subject, remote,ticket);
+        if(ticket!==null)assertOperationTicket(subject,ticket);
+        return { synced:flushed.synced, pending: (await all("outbox")).filter(item => item.subject === subject).length };
     }
 
     async function pendingCount(subject) {
@@ -515,6 +585,7 @@
     }
 
     async function rotateKey(subject) {
+        const ticket=operationTicket(subject);
         const entries = await localEncryptedEntries(subject);
         const plaintext = [];
         for (const entry of entries) plaintext.push([entry, await decryptSecret(subject, entry)]);
@@ -524,12 +595,12 @@
         const persisted = await get("keys", masterKeyId(subject));
         if (!persisted?.wrappedMasterKey) throw new Error("Vault wrapping metadata is missing.");
         persisted.currentVersion = version;
-        await put("keys", persisted);
+        assertOperationTicket(subject,ticket);await put("keys", persisted);assertOperationTicket(subject,ticket);
         const keyRecord = await keyFor(subject, version);
         for (const [entry, secret] of plaintext) {
             const encrypted = await encryptSecret(subject, entry.id, secret, keyRecord);
             const updated = { ...entry, ...encrypted, mutationId: crypto.randomUUID(), updatedAtEpochMillis: Date.now() };
-            await writeEntryAndOutbox(subject, updated);
+            await writeEntryAndOutbox(subject, updated,"PUT",ticket);
         }
         return { version, count: entries.length, recoveryKey: await exportRecoveryKey(subject) };
     }
@@ -538,8 +609,10 @@
     // The new wrapped key, re-encrypted entries and their outbox mutations are committed in ONE IndexedDB
     // transaction, so a failure can never leave entries encrypted under a key that was not saved.
     async function rotateMasterKey(subject, passphrase) {
+        const ticket=operationTicket(subject);
         requirePassphrase(passphrase);
-        await unlock(subject, passphrase); // proves the passkey and loads the current master
+        await unlock(subject, passphrase,ticket); // proves the passkey and loads the current master
+        assertOperationTicket(subject,ticket);
         const entries = await localEncryptedEntries(subject);
         const plaintext = [];
         for (const entry of entries) plaintext.push([entry, await decryptSecret(subject, entry)]);
@@ -552,21 +625,25 @@
         const wrapped = await wrappedMasterRecord(subject, raw, version, passphrase, createdAt);
         const updated = [];
         for (const [entry, secret] of plaintext) {
+            assertOperationTicket(subject,ticket);
             const encrypted = await encryptSecret(subject, entry.id, secret, keyRecord);
             updated.push({ ...entry, ...encrypted, mutationId: crypto.randomUUID(), updatedAtEpochMillis: Date.now() });
         }
+        assertOperationTicket(subject,ticket);
         const database = await openDatabase();
         const transaction = database.transaction(["keys", "entries", "outbox"], "readwrite");
-        transaction.objectStore("keys").put(wrapped);
-        for (const entry of updated) {
-            transaction.objectStore("entries").put(entry);
-            transaction.objectStore("outbox").put({
-                mutationId: entry.mutationId, subject, entryId: entry.id, operation: "PUT",
-                payload: wireEntry(entry), createdAt: Date.now(), attempts: 0
-            });
-        }
-        await transactionDone(transaction);
-        database.close();
+        trackWriteTransaction(subject,transaction);
+        try{
+            transaction.objectStore("keys").put(wrapped);
+            for (const entry of updated) {
+                transaction.objectStore("entries").put(entry);
+                transaction.objectStore("outbox").put({
+                    mutationId: entry.mutationId, subject, entryId: entry.id, operation: "PUT",
+                    payload: wireEntry(entry), createdAt: Date.now(), attempts: 0
+                });
+            }
+            await transactionDone(transaction);assertOperationTicket(subject,ticket);
+        }finally{untrackWriteTransaction(subject,transaction);database.close();}
         unlockedMasters.set(subject, master);
         return { version, count: updated.length, recoveryKey: `LS2-M-${base64Url(raw)}`, wrappedKey: await exportWrappedKey(subject) };
     }
@@ -588,7 +665,7 @@
     }
 
     globalThis.LockstepVault = {
-        addOtpUri, clearSubject, configurePassphrase, deleteEntry, exportRecoveryKey, exportSessionKey, exportText, exportWrappedKey, importRecoveryKey, isUnlocked, keyState, listEntries, lock,
+        addOtpUri, clearSubject, configurePassphrase, deleteEntry, exportRecoveryKey, exportSessionKey, exportText, exportWrappedKey, flushOutbox, importRecoveryKey, isUnlocked, keyState, listEntries, lock,
         localEncryptedEntries, otpAuthUri, parseOtpAuthUri, pendingCount, restoreSessionKey, rotateKey, rotateMasterKey, synchronize, synchronizeWrappedKey, unlock, updateEntry
     };
 })();

@@ -14,10 +14,34 @@ let localEntryOrder = [];
 let confirmationResolve = null;
 let confirmPasskeyValue = "";
 let restoreReturnView = "signed-out";
-let lockConfig = { enabled: false, timeoutSeconds: 60 };
+let lockConfig = { enabled: false, timeoutSeconds: 300, lockOnScreenLock:false };
+const LOCK_TIMEOUT_LABELS = new Map([
+    [300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1200,"20 minutes"],[1500,"25 minutes"],
+    [1800,"30 minutes"],[2100,"35 minutes"],[2400,"40 minutes"],[2700,"45 minutes"],[3000,"50 minutes"],
+    [3300,"55 minutes"],[3600,"1 hour"],[7200,"2 hours"],[14400,"4 hours"],[28800,"8 hours"],
+    [43200,"12 hours"],[86400,"1 day"],[172800,"2 days"],[604800,"1 week"]
+]);
 let isAuthenticated = false;
 let lockSetupRequired = false;
 let userDisplayName = "";
+
+function renderConnectivityStatus(online) {
+    const indicator=$("connectivity-status");
+    if(!indicator)return;
+    indicator.dataset.state=online?"online":"offline";
+    indicator.querySelector(".connectivity-label").textContent=online?"Online":"Offline";
+    indicator.title=online?"Device is connected to the internet":"Device is offline";
+}
+
+function checkConnectivity() {
+    const online=navigator.onLine;
+    renderConnectivityStatus(online);
+    return online;
+}
+
+function checkActiveSession() {
+    if(isAuthenticated&&navigator.onLine)void send("CHECK_SESSION");
+}
 
 // Fail-safe listener binding: one missing element must never abort every handler after it.
 function bind(id, ...args) {
@@ -304,6 +328,7 @@ function showSignedOut() {
 
 function showLocked() {
     const entering = $("locked").classList.contains("hidden") || $("auth-view").classList.contains("hidden");
+    document.querySelectorAll("dialog[open]").forEach((dialog)=>dialog.close("cancel"));
     toast("");
     status("");
     $("settings-view").classList.add("hidden");
@@ -706,7 +731,15 @@ function clearDragState() {
 async function send(type, extra = {}) {
     try {
         const response = await chrome.runtime.sendMessage({ type, ...extra });
-        if (response && typeof response.ok === "boolean") return response;
+        if (response && typeof response.ok === "boolean") {
+            if(!response.ok&&response.code==="VAULT_LOCKED")showLocked();
+            if(!response.ok&&response.code==="SESSION_REVOKED"){
+                isAuthenticated=false;
+                showSignedOut();
+                status(response.error||"This extension session was replaced by a login on another device.",true);
+            }
+            return response;
+        }
         return {
             ok: false,
             error: "The extension background service is unavailable. Reload Lockstep from chrome://extensions and try again."
@@ -898,7 +931,7 @@ bind("restore-reset", "click", async () => {
     }
     entries = [];
     showSignedOut();
-    status("Vault reset. Sign in again to create a new app lock.");
+    status("Vault reset. Sign in again to create lock protection.");
 });
 bind("restore-signout", "click", async () => { await send("LOGOUT"); showSignedOut(); });
 
@@ -916,13 +949,13 @@ async function lockAuthenticator() { await send("LOCK_VAULT"); await chrome.stor
 async function openLockSettings({ required = false, refresh = true } = {}) {
     if (refresh) {
         const result = await send("GET_LOCK_CONFIG");
-        if (!result.ok) { settingsMessage("Sign in with Google before enabling app lock.", true); return; }
+        if (!result.ok) { settingsMessage("Sign in with Google before changing lock protection.", true); return; }
         lockConfig = result.data;
     }
     lockSetupRequired = required;
     updateLockSummary();
-    $("lock-form").reset(); $("lock-timeout").value = String(lockConfig.timeoutSeconds || 60); $("lock-error").textContent = "";
-    $("lock-dialog-title").textContent = required ? "Create your app lock" : "Change your app lock";
+    $("lock-form").reset(); $("lock-timeout").value = String(lockConfig.timeoutSeconds || 300); $("lock-on-screen-lock").checked=Boolean(lockConfig.lockOnScreenLock); $("lock-error").textContent = "";
+    $("lock-dialog-title").textContent = required ? "Create lock protection" : "Change lock protection";
     $("lock-dialog-description").textContent = required
         ? "Create a passkey before adding or viewing authenticator accounts. It cannot be recovered."
         : "Choose a new passkey for this device and your synchronized vault.";
@@ -936,7 +969,7 @@ async function saveLockSettings(event) {
     const passcode = $("lock-passcode").value;
     if (passcode.length < 4) { $("lock-error").textContent = "Passkey must contain at least 4 characters."; return; }
     if (passcode !== $("lock-confirm").value) { $("lock-error").textContent = "Passkeys do not match."; return; }
-    const result = await send("SET_LOCK_CONFIG", { passcode, timeoutSeconds: Number($("lock-timeout").value), initialSetup: lockSetupRequired });
+    const result = await send("SET_LOCK_CONFIG", { passcode, timeoutSeconds: Number($("lock-timeout").value), lockOnScreenLock:$("lock-on-screen-lock").checked, initialSetup: lockSetupRequired });
     if (!result.ok) {
         if (result.code === "SESSION_EXPIRED" || result.code === "KEY_MISSING") {
             lockSetupRequired = false; $("lock-dialog").close();
@@ -946,13 +979,13 @@ async function saveLockSettings(event) {
     }
     lockConfig = result.data; await chrome.storage.session.set({ lastUnlockedAt: Date.now() }); updateLockSummary();
     lockSetupRequired = false;
-    $("lock-dialog").close(); $("lock-now").classList.remove("hidden"); settingsMessage("App lock saved.");
+    $("lock-dialog").close(); $("lock-now").classList.remove("hidden"); settingsMessage("Lock protection saved.");
     await showSignedIn();
 }
 
 function updateLockSummary() {
-    const descriptions = { 60: "Locks after 1 minute of inactivity", 300: "Locks after 5 minutes of inactivity", 900: "Locks after 15 minutes of inactivity", 1800: "Locks after 30 minutes of inactivity" };
-    $("lock-summary").textContent = lockConfig.enabled ? descriptions[lockConfig.timeoutSeconds] || "Locks after inactivity" : "Protect codes with a passkey";
+    const duration=LOCK_TIMEOUT_LABELS.get(Number(lockConfig.timeoutSeconds))||"inactivity";
+    $("lock-summary").textContent = lockConfig.enabled ? `Locks after ${duration}${lockConfig.lockOnScreenLock?" or when the screen locks":""}` : "Protect codes with a passkey";
 }
 async function exportBackup() {
     const confirmed = await confirmAction({
@@ -1027,7 +1060,10 @@ Promise.all([
     loadTheme().catch(() => applyTheme("system")),
     loadLocalPins().catch(() => { pinnedEntryIds = new Set(); })
 ]).finally(loadLockAndRoute);
+renderConnectivityStatus(navigator.onLine);
+checkConnectivity();
 setInterval(tick, 100);
+setInterval(()=>{checkConnectivity();checkActiveSession();},10000);
 setInterval(() => {
     if (isAuthenticated && !$("signed-in").classList.contains("hidden") && !document.hidden) load();
 }, 15000);
@@ -1035,9 +1071,11 @@ document.addEventListener("visibilitychange", () => {
     if (!document.hidden && isAuthenticated && !$("signed-in").classList.contains("hidden")) load();
 });
 window.addEventListener("online", () => {
+    checkConnectivity();
+    checkActiveSession();
     if (isAuthenticated && !$("signed-in").classList.contains("hidden")) load(true);
 });
-window.addEventListener("offline", () => { if (isAuthenticated) status("Offline"); });
+window.addEventListener("offline", () => { renderConnectivityStatus(false);if (isAuthenticated) status("Offline"); });
 
 let lastExtensionActivityAt = 0;
 function recordExtensionActivity() {

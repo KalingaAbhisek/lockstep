@@ -10,7 +10,7 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["activeTab", "alarms", "identity", "scripting", "storage"],
+  "permissions": ["activeTab", "alarms", "identity", "idle", "scripting", "storage"],
   "host_permissions": ["http://localhost:8080/*","https://lockstep.1309.sh/*"],
   "background": { "service_worker": "service-worker.js" },
   "action": {

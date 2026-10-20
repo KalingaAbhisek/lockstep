@@ -110,7 +110,7 @@ gcloud run services update $Service `
   --update-env-vars="GOOGLE_WEB_CLIENT_ID=$GoogleClientId,GOOGLE_EXTENSION_CLIENT_ID=$GoogleClientId,FIREBASE_PROJECT_ID=$ProjectId,ALLOWED_ORIGINS=$WebOrigin"
 ```
 
-Open `$WebOrigin`, sign in, configure App Lock, add a disposable test account, refresh, sign out/in, unlock, and verify the account remains available. Also install the PWA once on a phone and test offline code display.
+Open `$WebOrigin`, sign in, configure lock protection, add a disposable test account, refresh, sign out/in, unlock, and verify the account remains available. Also install the PWA once on a phone and test offline code display.
 
 ### Optional custom domain
 
@@ -184,7 +184,7 @@ Keep `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_EXTENSION_CLIENT_ID` set to the Web OAut
 Increment `version` in `extension/manifest.json` for every uploaded release. Then load the production-configured `extension` directory through `chrome://extensions` and test:
 
 - Google sign-in and sign-out.
-- First-time App Lock setup and unlock after closing/reopening the popup.
+- First-time lock-protection setup and unlock after closing/reopening the popup.
 - Add, edit, delete, pin, reorder, import, export, QR display, local QR image import, and visible-tab QR capture.
 - Offline behavior followed by reconnection and synchronization.
 - Web-to-extension and extension-to-web encrypted synchronization.

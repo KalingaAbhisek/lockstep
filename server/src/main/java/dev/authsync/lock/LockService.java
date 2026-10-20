@@ -13,27 +13,36 @@ import java.util.Set;
 public class LockService {
     private static final int ITERATIONS = 210_000;
     private static final int KEY_BITS = 256;
-    private static final Set<Integer> ALLOWED_TIMEOUTS = Set.of(60, 300, 900, 1800);
+    private static final int DEFAULT_TIMEOUT = 300;
+    private static final Set<Integer> ALLOWED_TIMEOUTS = Set.of(
+            300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700, 3000, 3300,
+            3600, 7200, 14400, 28800, 43200, 86400, 172800, 604800);
     private final LockSettingsRepository repository;
     private final SecureRandom random = new SecureRandom();
 
     public LockService(LockSettingsRepository repository) { this.repository = repository; }
 
     public LockConfig config(String subject) {
-        return repository.find(subject).map(settings -> new LockConfig(true, Math.max(60, Math.min(settings.timeoutSeconds(), 1800)), settings.wrappedKey())).orElse(new LockConfig(false, 0, null));
+        return repository.find(subject).map(settings -> new LockConfig(true,
+                ALLOWED_TIMEOUTS.contains(settings.timeoutSeconds()) ? settings.timeoutSeconds() : DEFAULT_TIMEOUT,
+                settings.lockOnScreenLock(), settings.wrappedKey())).orElse(new LockConfig(false, 0, false, null));
     }
 
     public LockConfig configure(String subject, String passcode, int timeoutSeconds) {
-        return configure(subject, passcode, timeoutSeconds, null);
+        return configure(subject, passcode, timeoutSeconds, false, null);
     }
 
     public LockConfig configure(String subject, String passcode, int timeoutSeconds, WrappedVaultKey wrappedKey) {
+        return configure(subject, passcode, timeoutSeconds, false, wrappedKey);
+    }
+
+    public LockConfig configure(String subject, String passcode, int timeoutSeconds, boolean lockOnScreenLock, WrappedVaultKey wrappedKey) {
         if (passcode == null || passcode.length() < 4 || passcode.length() > 128) throw new IllegalArgumentException("Passkey must contain 4 to 128 characters");
         if (!ALLOWED_TIMEOUTS.contains(timeoutSeconds)) throw new IllegalArgumentException("Unsupported lock timeout");
         validateWrappedKey(wrappedKey);
         byte[] salt = new byte[16]; random.nextBytes(salt);
-        repository.save(subject, new LockSettings(salt, derive(passcode, salt, ITERATIONS), ITERATIONS, timeoutSeconds, wrappedKey));
-        return new LockConfig(true, timeoutSeconds, wrappedKey);
+        repository.save(subject, new LockSettings(salt, derive(passcode, salt, ITERATIONS), ITERATIONS, timeoutSeconds, lockOnScreenLock, wrappedKey));
+        return new LockConfig(true, timeoutSeconds, lockOnScreenLock, wrappedKey);
     }
 
     public boolean verify(String subject, String passcode) {
@@ -63,7 +72,7 @@ public class LockService {
         finally { spec.clearPassword(); }
     }
 
-    public record LockConfig(boolean enabled, int timeoutSeconds, WrappedVaultKey wrappedKey) {
-        public LockConfig(boolean enabled, int timeoutSeconds) { this(enabled, timeoutSeconds, null); }
+    public record LockConfig(boolean enabled, int timeoutSeconds, boolean lockOnScreenLock, WrappedVaultKey wrappedKey) {
+        public LockConfig(boolean enabled, int timeoutSeconds) { this(enabled, timeoutSeconds, false, null); }
     }
 }

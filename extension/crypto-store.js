@@ -4,8 +4,15 @@
     const DB_VERSION = 1;
     const WRAP_ITERATIONS = 600000;
     const unlockedMasters = new Map();
+    const outboxFlushes = new Map();
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+
+    function acceptedMutation(subject) {
+        const master=unlockedMasters.get(subject);
+        if(!master)throw coded("VAULT_LOCKED","Vault locked. Unlock it to continue.");
+        return master;
+    }
 
     function requestResult(request) {
         return new Promise((resolve, reject) => {
@@ -138,7 +145,7 @@
         const existing = await get("keys", masterKeyId(subject));
         if (existing) throw new Error("Vault is locked. Enter your passkey to continue.");
         const legacy = await get("keys", keyId(subject, 1));
-        if (legacy || create) throw new Error("Protect this vault with an App Lock passkey before using it.");
+        if (legacy || create) throw new Error("Protect this vault with a Lockstep passkey before using it.");
         return null;
     }
 
@@ -394,10 +401,12 @@
     }
 
     async function addOtpUri(subject, uri) {
+        const master=acceptedMutation(subject);
         const parsed = parseOtpAuthUri(uri);
         const id = crypto.randomUUID();
         const mutationId = crypto.randomUUID();
-        const keyRecord = await currentKey(subject, true);
+        const keyRecord = { id:keyId(subject,master.currentVersion), subject, version:master.currentVersion,
+            key:await deriveVersionKey(master,subject,master.currentVersion), createdAt:Date.now() };
         const encrypted = await encryptSecret(subject, id, parsed.secret, keyRecord);
         const entry = {
             id, issuer: parsed.issuer, accountName: parsed.accountName, ...encrypted,
@@ -405,20 +414,23 @@
             createdAtEpochMillis: Date.now(), updatedAtEpochMillis: Date.now(), mutationId
         };
         await writeEntryAndOutbox(subject, entry);
-        return publicEntry(subject, { ...entry, subject, storageId: storageId(subject, id) });
+        const generated=await totp(parsed.secret,entry.algorithm,entry.digits,entry.periodSeconds);
+        return { ...wireEntry(entry), ...generated, period:entry.periodSeconds, serverEpochMillis:Date.now(), validForMillis:generated.validUntilEpochMillis-Date.now() };
     }
 
     async function updateEntry(subject, id, issuer, accountName) {
+        acceptedMutation(subject);
         validateUuidV4(id, "Entry ID");
         const entry = await get("entries", storageId(subject, id));
         if (!entry) throw new Error("Authenticator entry was not found.");
         const mutationId = crypto.randomUUID();
         const updated = { ...entry, issuer: issuer.trim(), accountName: accountName.trim(), mutationId, updatedAtEpochMillis: Date.now() };
         await writeEntryAndOutbox(subject, updated);
-        return publicEntry(subject, updated);
+        return wireEntry(updated);
     }
 
     async function deleteEntry(subject, id) {
+        acceptedMutation(subject);
         validateUuidV4(id, "Entry ID");
         await writeEntryAndOutbox(subject, { id, mutationId: crypto.randomUUID() }, "DELETE");
     }
@@ -450,7 +462,7 @@
         database.close();
     }
 
-    async function synchronize(subject, transport) {
+    async function flushOutboxNow(subject, transport) {
         const queue = (await all("outbox")).filter(item => item.subject === subject).sort((a, b) => a.createdAt - b.createdAt);
         let synced = 0;
         for (const item of queue) {
@@ -459,9 +471,23 @@
             await removeOutbox(item.mutationId);
             synced++;
         }
-        const remote = await transport.list();
-        await replaceFromServer(subject, remote);
         return { synced, pending: (await all("outbox")).filter(item => item.subject === subject).length };
+    }
+
+    async function flushOutbox(subject, transport) {
+        const previous=outboxFlushes.get(subject)||Promise.resolve();
+        const current=previous.catch(()=>null).then(()=>flushOutboxNow(subject,transport));
+        outboxFlushes.set(subject,current);
+        try{return await current;}finally{if(outboxFlushes.get(subject)===current)outboxFlushes.delete(subject);}
+    }
+
+    async function synchronize(subject, transport, allowLockedPull = false) {
+        const flushed=await flushOutbox(subject,transport);
+        if(!unlockedMasters.has(subject)&&!allowLockedPull)return flushed;
+        const remote = await transport.list();
+        if(!unlockedMasters.has(subject)&&!allowLockedPull)return { synced:flushed.synced, pending:(await all("outbox")).filter(item=>item.subject===subject).length };
+        await replaceFromServer(subject, remote);
+        return { synced:flushed.synced, pending: (await all("outbox")).filter(item => item.subject === subject).length };
     }
 
     async function pendingCount(subject) {
@@ -592,7 +618,7 @@
     }
 
     globalThis.LockstepVault = {
-        addOtpUri, clearSubject, configurePassphrase, deleteEntry, exportRecoveryKey, exportSessionKey, exportText, exportWrappedKey, importRecoveryKey, isUnlocked, keyState, listEntries, lock,
+        addOtpUri, clearSubject, configurePassphrase, deleteEntry, exportRecoveryKey, exportSessionKey, exportText, exportWrappedKey, flushOutbox, importRecoveryKey, isUnlocked, keyState, listEntries, lock,
         localEncryptedEntries, otpAuthUri, parseOtpAuthUri, pendingCount, restoreSessionKey, rotateKey, rotateMasterKey, synchronize, synchronizeWrappedKey, unlock, updateEntry
     };
 })();

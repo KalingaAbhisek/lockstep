@@ -3,6 +3,7 @@ package dev.authsync.lock;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -15,9 +16,9 @@ class LockServiceTest {
 
     @Test
     void configuresAndVerifiesAPasskeyWithoutStoringPlaintext() {
-        LockService.LockConfig config = service.configure("google-user", "4826", 300);
+        LockService.LockConfig config = service.configure("google-user", "4826", 300, true, null);
 
-        assertThat(config).isEqualTo(new LockService.LockConfig(true, 300));
+        assertThat(config).isEqualTo(new LockService.LockConfig(true, 300, true, null));
         assertThat(service.verify("google-user", "4826")).isTrue();
         assertThat(service.verify("google-user", "wrong")).isFalse();
 
@@ -29,7 +30,7 @@ class LockServiceTest {
 
     @Test
     void isolatesSettingsByGoogleUser() {
-        service.configure("user-a", "alpha-key", 60);
+        service.configure("user-a", "alpha-key", 300);
 
         assertThat(service.verify("user-a", "alpha-key")).isTrue();
         assertThat(service.verify("user-b", "alpha-key")).isFalse();
@@ -38,38 +39,47 @@ class LockServiceTest {
 
     @Test
     void rejectsShortPasskeysAndUnknownTimeouts() {
-        assertThatThrownBy(() -> service.configure("user", "123", 60))
+        assertThatThrownBy(() -> service.configure("user", "123", 300))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("4 to 128");
-        assertThatThrownBy(() -> service.configure("user", "1234", 30))
+        assertThatThrownBy(() -> service.configure("user", "1234", 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("timeout");
         assertThatThrownBy(() -> service.configure("user", "1234", 0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("timeout");
         assertThat(service.configure("user", "1234", 1800).timeoutSeconds()).isEqualTo(1800);
-        assertThatThrownBy(() -> service.configure("user", "1234", 3600))
+        assertThat(service.configure("user", "1234", 604800).timeoutSeconds()).isEqualTo(604800);
+        assertThatThrownBy(() -> service.configure("user", "1234", 604801))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("timeout");
     }
 
     @Test
-    void capsLegacyOneHourSettingsAtThirtyMinutes() {
-        repository.save("legacy-user", new LockSettings(new byte[16], new byte[32], 210_000, 3600));
-
-        assertThat(service.config("legacy-user")).isEqualTo(new LockService.LockConfig(true, 1800));
+    void acceptsEverySupportedLockDuration() {
+        List.of(300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700, 3000, 3300,
+                        3600, 7200, 14400, 28800, 43200, 86400, 172800, 604800)
+                .forEach(timeout -> assertThat(service.configure("user-" + timeout, "1234", timeout).timeoutSeconds())
+                        .isEqualTo(timeout));
     }
 
     @Test
-    void migratesLegacyImmediateLockSettingsToOneMinute() {
+    void keepsSupportedOneHourSettings() {
+        repository.save("legacy-user", new LockSettings(new byte[16], new byte[32], 210_000, 3600));
+
+        assertThat(service.config("legacy-user")).isEqualTo(new LockService.LockConfig(true, 3600));
+    }
+
+    @Test
+    void migratesUnsupportedLegacySettingsToFiveMinutes() {
         repository.save("legacy-user", new LockSettings(new byte[16], new byte[32], 210_000, 0));
 
-        assertThat(service.config("legacy-user")).isEqualTo(new LockService.LockConfig(true, 60));
+        assertThat(service.config("legacy-user")).isEqualTo(new LockService.LockConfig(true, 300));
     }
 
     @Test
     void removesExistingLockSettings() {
-        service.configure("user", "1234", 60);
+        service.configure("user", "1234", 300);
 
         service.remove("user");
 

@@ -2,11 +2,12 @@ if (!globalThis.__authsyncScannerInstalled) {
     globalThis.__authsyncScannerInstalled = true;
     chrome.runtime.onMessage.addListener((message) => {
         if (message.type === "AUTHSYNC_SELECT_QR") selectAndScan(message.screenshot);
+        if (message.type === "AUTHSYNC_CANCEL_QR") globalThis.__authsyncCancelScanner?.();
     });
 }
 
 async function selectAndScan(screenshot) {
-    globalThis.__authsyncScannerOverlay?.remove();
+    globalThis.__authsyncCancelScanner?.();
     const overlay = document.createElement("div");
     overlay.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;display:block;cursor:crosshair;background:#07111f2e;touch-action:none;user-select:none;";
     const shadow = overlay.attachShadow({ mode: "closed" });
@@ -104,8 +105,10 @@ async function selectAndScan(screenshot) {
     const cancel = () => {
         overlay.remove();
         if (globalThis.__authsyncScannerOverlay === overlay) globalThis.__authsyncScannerOverlay = null;
+        if (globalThis.__authsyncCancelScanner === cancel) globalThis.__authsyncCancelScanner = null;
         window.removeEventListener("keydown", onKey);
     };
+    globalThis.__authsyncCancelScanner = cancel;
     const onKey = (event) => { if (event.key === "Escape") cancel(); };
     window.addEventListener("keydown", onKey);
     overlay.addEventListener("pointerdown", (event) => {

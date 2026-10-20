@@ -2,6 +2,45 @@ importScripts("config.js", "crypto-store.js");
 
 let lastSyncError = null;
 let tokenRefreshPromise = null;
+let activeScannerTabId = null;
+const PENDING_SYNC_ALARM = "lockstep-pending-sync";
+const CONNECTIVITY_ALARM = "lockstep-connectivity-check";
+let pendingSyncPromise = null;
+let pendingSyncTimeout = null;
+let connectivityPollPromise = null;
+let connectivityTimeout = null;
+const ALLOWED_LOCK_TIMEOUTS = new Set([300,600,900,1200,1500,1800,2100,2400,2700,3000,3300,3600,7200,14400,28800,43200,86400,172800,604800]);
+
+function schedulePendingSync(delay = 0) {
+    clearTimeout(pendingSyncTimeout);
+    pendingSyncTimeout=null;
+    pendingSyncTimeout=setTimeout(()=>retryPendingSync().catch(()=>null),delay);
+    return chrome.alarms.create(PENDING_SYNC_ALARM,{when:Date.now()+Math.max(1,delay)});
+}
+
+async function stopPendingSync() {
+    clearTimeout(pendingSyncTimeout);pendingSyncTimeout=null;
+    await chrome.alarms.clear(PENDING_SYNC_ALARM);
+}
+
+async function retryPendingSync() {
+    if(pendingSyncPromise)return pendingSyncPromise;
+    pendingSyncPromise=(async()=>{
+        clearTimeout(pendingSyncTimeout);pendingSyncTimeout=null;
+        await chrome.alarms.clear(PENDING_SYNC_ALARM);
+        let owner;
+        try{owner=await subject();}catch{return;}
+        let pending=await LockstepVault.pendingCount(owner);
+        if(!pending)return;
+        if(!navigator.onLine){await schedulePendingSync(10000);return;}
+        try{await LockstepVault.flushOutbox(owner,transport());lastSyncError=null;}
+        catch(error){lastSyncError=error?.message||"Synchronization failed.";}
+        pending=await LockstepVault.pendingCount(owner);
+        if(pending)await schedulePendingSync(10000);
+        else await stopPendingSync();
+    })().finally(()=>{pendingSyncPromise=null;});
+    return pendingSyncPromise;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const actions = {
@@ -18,7 +57,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         GET_LOCK_CONFIG: getLockConfig,
         RESUME_VAULT: resumeVault,
         TOUCH_VAULT: touchVault,
-        SET_LOCK_CONFIG: () => message.initialSetup ? setLockConfig(message.passcode, message.timeoutSeconds, true) : withUnlocked(() => setLockConfig(message.passcode, message.timeoutSeconds, false)),
+        SET_LOCK_CONFIG: () => message.initialSetup ? setLockConfig(message.passcode, message.timeoutSeconds, message.lockOnScreenLock, true) : withUnlocked(() => setLockConfig(message.passcode, message.timeoutSeconds, message.lockOnScreenLock, false)),
         VERIFY_LOCK: () => verifyLock(message.passcode),
         LOCK_VAULT: lockVault,
         REMOVE_LOCK: removeLock,
@@ -29,6 +68,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         RESET_VAULT: resetVault,
         ROTATE_ENCRYPTION_KEY: () => withUnlocked(() => rotateEncryptionKey(message.passcode)),
         GET_SYNC_STATE: syncState,
+        CHECK_CONNECTIVITY: checkConnectivity,
+        CHECK_SESSION: checkActiveSession,
         SYNC_NOW: synchronize,
         OPEN_PRIVACY: openPrivacyPolicy
     };
@@ -48,6 +89,7 @@ async function openPrivacyPolicy() {
 
 async function login() {
     const claims = await authorize(true);
+    await registerAppSession();
     const exists = await backendAccountExists();
     if (!exists) {
         await LockstepVault.clearSubject(claims.sub);
@@ -59,7 +101,7 @@ async function login() {
     await chrome.storage.session.remove("newAccountSetupAuthorized");
     if (await LockstepVault.keyState(claims.sub) === "none") await chrome.storage.session.set({ restoreAuthorized: true });
     else await chrome.storage.session.remove("restoreAuthorized");
-    await synchronize().catch(() => null);
+    await synchronize(await LockstepVault.keyState(claims.sub)==="none").catch(() => null);
     return { email: claims.email, displayName: claims.name || claims.given_name || claims.email, newAccount: false };
 }
 
@@ -89,8 +131,16 @@ async function authorize(interactive) {
 
 async function logout() {
     try { LockstepVault.lock(await subject()); } catch {}
+    await stopPendingSync();
     await chrome.storage.session.clear();
-    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig"]);
+    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId"]);
+}
+
+async function invalidateAuthentication() {
+    try { LockstepVault.lock(await subject()); } catch {}
+    await stopPendingSync();
+    await chrome.storage.session.clear();
+    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId"]);
 }
 
 async function subject() {
@@ -107,29 +157,40 @@ async function withUnlocked(action) {
     const owner = await subject();
     await enforceTimedLock(owner);
     if (!LockstepVault.isUnlocked(owner)) throw coded("VAULT_LOCKED", "Unlock the authenticator before using this feature.");
-    return action();
+    const result=await action();
+    if(!LockstepVault.isUnlocked(owner))throw coded("VAULT_LOCKED","Vault locked while the operation was finishing. Your accepted change was saved safely.");
+    return result;
 }
 
 async function cachedLockConfig() {
-    const config = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig || { enabled: true, timeoutSeconds: 60 };
-    return { ...config, timeoutSeconds: Number(config.timeoutSeconds) > 0 ? Number(config.timeoutSeconds) : 60 };
+    const config = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig || { enabled: true, timeoutSeconds: 300, lockOnScreenLock: false };
+    const timeout=Number(config.timeoutSeconds);
+    return { ...config, timeoutSeconds: ALLOWED_LOCK_TIMEOUTS.has(timeout) ? timeout : 300, lockOnScreenLock:Boolean(config.lockOnScreenLock) };
 }
 
 async function persistUnlockedSession(owner, config = null) {
     const lock = config || await cachedLockConfig();
     const lastUnlockedAt = Date.now();
     if (!lock.enabled) {
+        await chrome.alarms.clear("lockstep-lock");
         await chrome.storage.session.remove("unlockedMaster");
         await chrome.storage.session.set({ lastUnlockedAt });
         return;
     }
     const snapshot = LockstepVault.exportSessionKey(owner);
     await chrome.storage.session.set({ lastUnlockedAt, unlockedMaster: snapshot ? { subject: owner, snapshot } : null });
+    chrome.alarms.create("lockstep-lock",{when:lastUnlockedAt+lock.timeoutSeconds*1000});
 }
 
 async function clearUnlockedSession(owner) {
     LockstepVault.lock(owner);
-    await chrome.storage.session.remove(["lastUnlockedAt", "unlockedMaster"]);
+    const scannerState=await chrome.storage.session.get("activeScannerTabId");
+    const scannerTabId=activeScannerTabId??scannerState.activeScannerTabId??null;
+    await chrome.storage.session.remove(["lastUnlockedAt", "unlockedMaster", "activeScannerTabId"]);
+    await chrome.alarms.clear("lockstep-lock");
+    if(scannerTabId!==null)chrome.tabs.sendMessage(scannerTabId,{type:"AUTHSYNC_CANCEL_QR"}).catch(()=>null);
+    activeScannerTabId=null;
+    void schedulePendingSync(0);
 }
 
 async function enforceTimedLock(owner) {
@@ -230,15 +291,23 @@ function transport() {
     };
 }
 
-async function synchronize() {
+async function synchronize(allowLockedPull = false) {
     const owner = await subject();
     try {
+        if(!LockstepVault.isUnlocked(owner)&&!allowLockedPull){
+            const result=await LockstepVault.flushOutbox(owner,transport());
+            lastSyncError=null;
+            if(result.pending)await schedulePendingSync(10000);else await stopPendingSync();
+            return result;
+        }
         if (!await backendAccountExists()) throw coded("ACCOUNT_MISSING", "Your server account no longer exists. Sign in again to start fresh.");
-        const result = await LockstepVault.synchronize(owner, transport());
+        const result = await LockstepVault.synchronize(owner, transport(),allowLockedPull);
         lastSyncError = null;
+        if(result.pending)await schedulePendingSync(10000);else await stopPendingSync();
         return result;
     } catch (error) {
         lastSyncError = error?.message || "Synchronization failed.";
+        if(await LockstepVault.pendingCount(owner))await schedulePendingSync(10000);
         throw error;
     }
 }
@@ -299,11 +368,11 @@ async function exportRecoveryKey() {
 async function importRecoveryKey(value, passcode) {
     await token(); // fail early (SESSION_EXPIRED) before touching local state
     const owner = await subject();
-    await synchronize(); // restoration must fail closed unless ciphertext is available for key verification
+    await synchronize(true); // restoration is the explicit locked flow allowed to download ciphertext for key verification
     const version = await LockstepVault.importRecoveryKey(owner, value, passcode);
     const cached = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig;
     const wrappedKey = await LockstepVault.exportWrappedKey(owner);
-    const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 60, wrappedKey }) });
+    const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 300, lockOnScreenLock:Boolean(cached?.lockOnScreenLock), wrappedKey }) });
     await chrome.storage.local.set({ cachedLockConfig: config });
     await chrome.storage.session.remove("restoreAuthorized");
     await persistUnlockedSession(owner, config);
@@ -319,7 +388,7 @@ async function rotateEncryptionKey(passcode) {
     try {
         // Publish the new wrapped key BEFORE the re-encrypted entries so other devices can always decrypt what they pull.
         const cached = (await chrome.storage.local.get("cachedLockConfig")).cachedLockConfig;
-        const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 60, wrappedKey: result.wrappedKey }) });
+        const config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds: cached?.timeoutSeconds || 300, lockOnScreenLock:Boolean(cached?.lockOnScreenLock), wrappedKey: result.wrappedKey }) });
         await chrome.storage.local.set({ cachedLockConfig: config });
         await synchronize();
         await persistUnlockedSession(owner, config);
@@ -329,7 +398,56 @@ async function rotateEncryptionKey(passcode) {
     }
 }
 async function syncState() {
-    return { online: navigator.onLine, pending: await LockstepVault.pendingCount(await subject()), error: lastSyncError };
+    return { online: await checkConnectivity(), pending: await LockstepVault.pendingCount(await subject()), error: lastSyncError };
+}
+
+async function registerAppSession() {
+    const response=await fetch(AUTHSYNC_CONFIG.apiBaseUrl+"/api/v1/session",{
+        method:"POST",cache:"no-store",
+        headers:{"Content-Type":"application/json",Authorization:`Bearer ${await token()}`,"X-Lockstep-Client":"extension"}
+    });
+    const body=await response.json().catch(()=>({}));
+    if(!response.ok||!body.sessionToken){
+        throw coded(body.code||(response.status===401?"SESSION_EXPIRED":"REQUEST_FAILED"),body.error||(response.status===401?"Sign in again.":`Request failed (${response.status})`));
+    }
+    await chrome.storage.local.set({appSessionId:body.sessionToken});
+    return body.sessionToken;
+}
+
+async function appSession() {
+    const stored=(await chrome.storage.local.get("appSessionId")).appSessionId;
+    return stored||registerAppSession();
+}
+
+async function checkConnectivity() {
+    return navigator.onLine;
+}
+
+async function checkActiveSession() {
+    if(!navigator.onLine)return false;
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),5000);
+    try{
+        const local=await chrome.storage.local.get("vaultSubject");
+        if(local.vaultSubject)await api("/api/v1/session",{signal:controller.signal});
+        return true;
+    }catch(error){if(error?.code==="SESSION_REVOKED")throw error;return false;}
+    finally{clearTimeout(timeout);}
+}
+
+function scheduleConnectivityCheck() {
+    clearTimeout(connectivityTimeout);
+    connectivityTimeout=setTimeout(()=>pollConnectivity().catch(()=>null),10000);
+    chrome.alarms.create(CONNECTIVITY_ALARM,{when:Date.now()+10000});
+}
+
+async function pollConnectivity() {
+    if(connectivityPollPromise)return connectivityPollPromise;
+    connectivityPollPromise=(async()=>{
+        clearTimeout(connectivityTimeout);connectivityTimeout=null;
+        try{await checkActiveSession();}finally{scheduleConnectivityCheck();}
+    })().finally(()=>{connectivityPollPromise=null;});
+    return connectivityPollPromise;
 }
 
 async function getLockConfig() {
@@ -344,15 +462,16 @@ async function getLockConfig() {
         const cached = await chrome.storage.local.get("cachedLockConfig");
         config = cached.cachedLockConfig;
         // Offline / expired token but this device holds a protected key: the lock obviously exists.
-        if (!config && keyState === "wrapped") config = { enabled: true, timeoutSeconds: 60 };
+        if (!config && keyState === "wrapped") config = { enabled: true, timeoutSeconds: 300, lockOnScreenLock:false };
         if (!config) throw coded("SESSION_EXPIRED", "Sign in again to synchronize.");
     }
     // A passkey-wrapped key on this device means the lock is on, whatever a stale cache/server says.
     if (keyState === "wrapped" && !config.enabled) config = { ...config, enabled: true };
-    config = { ...config, timeoutSeconds: Number(config.timeoutSeconds) > 0 ? Number(config.timeoutSeconds) : 60 };
+    const timeout=Number(config.timeoutSeconds);
+    config = { ...config, timeoutSeconds: ALLOWED_LOCK_TIMEOUTS.has(timeout) ? timeout : 300, lockOnScreenLock:Boolean(config.lockOnScreenLock) };
     return config;
 }
-async function setLockConfig(passcode, timeoutSeconds, initialSetup = false) {
+async function setLockConfig(passcode, timeoutSeconds, lockOnScreenLock, initialSetup = false) {
     const vaultSubject = await subject();
     await token(); // SESSION_EXPIRED up front, before any local key material changes
     let config;
@@ -368,7 +487,7 @@ async function setLockConfig(passcode, timeoutSeconds, initialSetup = false) {
         await LockstepVault.configurePassphrase(vaultSubject, passcode);
     }
     const wrappedKey = await LockstepVault.exportWrappedKey(vaultSubject);
-    config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds, wrappedKey }) });
+    config = await api("/api/v1/lock", { method: "PUT", body: JSON.stringify({ passcode, timeoutSeconds, lockOnScreenLock:Boolean(lockOnScreenLock), wrappedKey }) });
     await chrome.storage.local.set({ cachedLockConfig: config });
     await chrome.storage.session.remove("newAccountSetupAuthorized");
     await persistUnlockedSession(vaultSubject, config);
@@ -404,10 +523,10 @@ async function verifyLock(passcode) {
             // Also republish when this device holds a newer wrapped key (e.g. a rotation whose upload failed).
             if (!serverConfig.enabled || localNewer) {
                 const cached = await chrome.storage.local.get("cachedLockConfig");
-                const timeoutSeconds = cached.cachedLockConfig?.timeoutSeconds || 60;
+                const timeoutSeconds = cached.cachedLockConfig?.timeoutSeconds || 300;
                 const restored = await api("/api/v1/lock", {
                     method: "PUT",
-                    body: JSON.stringify({ passcode, timeoutSeconds, wrappedKey: await LockstepVault.exportWrappedKey(owner) })
+                    body: JSON.stringify({ passcode, timeoutSeconds, lockOnScreenLock:Boolean(cached.cachedLockConfig?.lockOnScreenLock), wrappedKey: await LockstepVault.exportWrappedKey(owner) })
                 });
                 await chrome.storage.local.set({ cachedLockConfig: restored });
             }
@@ -422,7 +541,10 @@ async function verifyLock(passcode) {
         throw error;
     }
 }
-async function lockVault() { await clearUnlockedSession(await subject()); }
+async function lockVault() {
+    const owner=await subject();
+    await clearUnlockedSession(owner);
+}
 async function resetVault() {
     const owner = await subject();
     await token();
@@ -440,11 +562,13 @@ async function removeLock() {
 async function api(path, options = {}) {
     const response = await fetch(AUTHSYNC_CONFIG.apiBaseUrl + path, {
         ...options, cache: "no-store",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${await token()}` }
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${await token()}`, "X-Lockstep-Client":"extension", "X-Lockstep-Session": await appSession(), ...options.headers }
     });
     if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || (response.status === 401 ? "Sign in again." : `Request failed (${response.status})`));
+        const error=coded(body.code||(response.status===401?"SESSION_EXPIRED":"REQUEST_FAILED"),body.error||(response.status===401?"Sign in again.":`Request failed (${response.status})`));
+        if(error.code==="SESSION_REVOKED")await invalidateAuthentication();
+        throw error;
     }
     return response.status === 204 ? null : response.json();
 }
@@ -458,6 +582,8 @@ async function startScan() {
         const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
         await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["vendor/jsQR.js", "scanner.js"] });
         await chrome.tabs.sendMessage(tab.id, { type: "AUTHSYNC_SELECT_QR", screenshot });
+        activeScannerTabId=tab.id;
+        await chrome.storage.session.set({activeScannerTabId:tab.id});
     } catch (error) {
         if (/cannot access|cannot be scripted|missing host permission/i.test(error.message)) {
             throw new Error("This page is protected by Chrome. Open the webpage containing the QR code, then scan again.");
@@ -481,10 +607,27 @@ function parseClaims(jwt) {
     return JSON.parse(decodeURIComponent(atob(base64).split("").map(character => `%${character.charCodeAt(0).toString(16).padStart(2, "0")}`).join("")));
 }
 
-self.addEventListener("online", () => synchronize().catch(() => null));
-chrome.runtime.onStartup.addListener(() => synchronize().catch(() => null));
-chrome.runtime.onInstalled.addListener(() => chrome.alarms.create("lockstep-sync", { periodInMinutes: 0.5 }));
+async function enforceDeviceScreenLock(deviceState = null) {
+    const state=deviceState||await chrome.idle.queryState(15);
+    if(state!=="locked")return false;
+    const config=await cachedLockConfig();
+    if(!config.enabled||!config.lockOnScreenLock)return false;
+    let owner;try{owner=await subject();}catch{return false;}
+    await clearUnlockedSession(owner);
+    return true;
+}
+
+self.addEventListener("online", () => { schedulePendingSync(0);synchronize().catch(() => null);pollConnectivity().catch(()=>null); });
+self.addEventListener("offline", () => schedulePendingSync(10000));
+chrome.idle.onStateChanged.addListener((state)=>{if(state==="locked")enforceDeviceScreenLock(state).catch(()=>null);});
+chrome.runtime.onStartup.addListener(() => { schedulePendingSync(0);synchronize().catch(() => null);pollConnectivity().catch(()=>null);enforceDeviceScreenLock().catch(()=>null); });
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create("lockstep-sync", { periodInMinutes: 0.5 });schedulePendingSync(0);scheduleConnectivityCheck(); });
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "lockstep-sync") synchronize().catch(() => null);
+    if(alarm.name === "lockstep-lock")subject().then(enforceTimedLock).catch(()=>null);
+    if(alarm.name === PENDING_SYNC_ALARM)retryPendingSync().catch(()=>null);
+    if (alarm.name === "lockstep-sync") { synchronize().catch(() => null);enforceDeviceScreenLock().catch(()=>null); }
+    if (alarm.name === CONNECTIVITY_ALARM) pollConnectivity().catch(()=>null);
 });
 chrome.alarms.create("lockstep-sync", { periodInMinutes: 0.5 });
+scheduleConnectivityCheck();
+enforceDeviceScreenLock().catch(()=>null);

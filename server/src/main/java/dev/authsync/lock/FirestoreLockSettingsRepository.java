@@ -26,6 +26,7 @@ public class FirestoreLockSettingsRepository implements LockSettingsRepository {
         Blob verifier = document.getBlob("lockPasscodeVerifier");
         Long iterations = document.getLong("lockPasscodeIterations");
         Long timeout = document.getLong("lockTimeoutSeconds");
+        Boolean lockOnScreenLock = document.getBoolean("lockOnScreenLock");
         if (salt == null || verifier == null || iterations == null || timeout == null) return Optional.empty();
         WrappedVaultKey wrappedKey = null;
         String wrappedMasterKey = document.getString("wrappedVaultKey");
@@ -36,7 +37,8 @@ public class FirestoreLockSettingsRepository implements LockSettingsRepository {
                     document.getString("wrappedVaultKeyAlgorithm"), Math.toIntExact(document.getLong("wrappedVaultKeyIterations")),
                     document.getString("wrappedVaultKeySalt"), document.getString("wrappedVaultKeyIv"), wrappedMasterKey);
         }
-        return Optional.of(new LockSettings(salt.toBytes(), verifier.toBytes(), Math.toIntExact(iterations), Math.toIntExact(timeout), wrappedKey));
+        return Optional.of(new LockSettings(salt.toBytes(), verifier.toBytes(), Math.toIntExact(iterations), Math.toIntExact(timeout),
+                Boolean.TRUE.equals(lockOnScreenLock), wrappedKey));
     }
 
     @Override
@@ -46,6 +48,7 @@ public class FirestoreLockSettingsRepository implements LockSettingsRepository {
         values.put("lockPasscodeVerifier", Blob.fromBytes(settings.verifier()));
         values.put("lockPasscodeIterations", settings.iterations());
         values.put("lockTimeoutSeconds", settings.timeoutSeconds());
+        values.put("lockOnScreenLock", settings.lockOnScreenLock());
         if (settings.wrappedKey() != null) {
             WrappedVaultKey key = settings.wrappedKey();
             values.put("wrappedVaultKeyVersion", key.currentVersion()); values.put("wrappedVaultKeyCreatedAt", key.createdAt());
@@ -59,7 +62,7 @@ public class FirestoreLockSettingsRepository implements LockSettingsRepository {
     @Override
     public void delete(String googleSubject) {
         Map<String, Object> values = new HashMap<>();
-        for (String field : new String[]{"lockPasscodeSalt", "lockPasscodeVerifier", "lockPasscodeIterations", "lockTimeoutSeconds",
+        for (String field : new String[]{"lockPasscodeSalt", "lockPasscodeVerifier", "lockPasscodeIterations", "lockTimeoutSeconds", "lockOnScreenLock",
                 "wrappedVaultKeyVersion", "wrappedVaultKeyCreatedAt", "wrappedVaultKeyUpdatedAt", "wrappedVaultKeyAlgorithm",
                 "wrappedVaultKeyIterations", "wrappedVaultKeySalt", "wrappedVaultKeyIv", "wrappedVaultKey"}) {
             values.put(field, FieldValue.delete());
