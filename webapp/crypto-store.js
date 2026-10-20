@@ -350,7 +350,7 @@
 
     async function decryptSecret(subject, entry) {
         const keyRecord = await keyFor(subject, entry.keyVersion);
-        if (!keyRecord) throw new Error(`Recovery key required for encryption key version ${entry.keyVersion}.`);
+        if (!keyRecord) throw new Error(`Recovery key required for version ${entry.keyVersion}.`);
         try {
             const plaintext = await crypto.subtle.decrypt(
                 { name: "AES-GCM", iv: base64ToBytes(entry.secretIv), additionalData: associatedData(subject, entry.id, entry.keyVersion), tagLength: 128 },
@@ -553,7 +553,7 @@
 
     async function exportRecoveryKey(subject) {
         const master = await masterKey(subject, false);
-        if (!master) throw new Error("This vault does not have a local encryption key yet.");
+        if (!master) throw new Error("This vault does not have a local recovery key yet.");
         const raw = base64ToBytes(master.raw);
         return `LS2-M-${base64Url(raw)}`;
     }

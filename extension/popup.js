@@ -158,16 +158,16 @@ function downloadRecoveryKeyFile(value) {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 bind("settings-key-rotate", "click", async () => {
-    const confirmed = await confirmAction({ title: "Rotate encryption key?", message: "A brand-new master key is generated and every account is re-encrypted with it. A NEW recovery key will be downloaded; your old recovery key stops working. Other devices pick up the new key the next time they unlock. Enter your passkey to continue.", confirmLabel: "Rotate key", iconName: "lock", passkey: true });
+    const confirmed = await confirmAction({ title: "Rotate recovery key?", message: "A brand-new recovery key is generated and every account is re-encrypted with it. The new recovery key will be downloaded; your old recovery key stops working. Other devices pick up the new key the next time they unlock. Enter your passkey to continue.", confirmLabel: "Rotate recovery key", iconName: "lock", passkey: true });
     const passcode = confirmPasskeyValue; confirmPasskeyValue = "";
     if (!confirmed) return;
-    if (passcode.length < 4) { settingsMessage("Enter your passkey to rotate the encryption key.", true); return; }
-    const result = await withProgress("Rotating encryption key…", () => send("ROTATE_ENCRYPTION_KEY", { passcode }));
+    if (passcode.length < 4) { settingsMessage("Enter your passkey to rotate the recovery key.", true); return; }
+    const result = await withProgress("Rotating recovery key…", () => send("ROTATE_ENCRYPTION_KEY", { passcode }));
     if (!result.ok) { if (handleSessionProblem(result)) return; settingsMessage(result.error, true); return; }
     downloadRecoveryKeyFile(result.data.recoveryKey);
     await load(true);
-    if (result.data.synchronized) settingsMessage(`Key rotated to version ${result.data.version}. New recovery key downloaded; store it somewhere private.`);
-    else settingsMessage(`Key rotated on this device (version ${result.data.version}) and the new recovery key was downloaded, but syncing failed: ${result.data.syncError} Unlock again to retry.`, true);
+    if (result.data.synchronized) settingsMessage(`Recovery key rotated to version ${result.data.version} and downloaded; store it somewhere private.`);
+    else settingsMessage(`Recovery key rotated on this device (version ${result.data.version}) and downloaded, but syncing failed: ${result.data.syncError} Unlock again to retry.`, true);
 });
 bind("settings-signout", "click", async () => {
     await send("LOGOUT");

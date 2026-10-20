@@ -10,7 +10,7 @@ Static web/PWA ───┘                 │
                                     └─ HTTPS + Google ID token ─> Spring Boot API ─> Firestore ciphertext
 ```
 
-The clients parse authenticator URIs, encrypt seeds, generate verification codes, render transfer QR images, and export backups locally. The server never receives a plaintext seed, encryption key, recovery key, or generated code.
+The clients parse authenticator URIs, encrypt seeds, generate verification codes, render transfer QR images, and export backups locally. The server never receives a plaintext seed, recovery key, or generated code.
 
 ## Security and storage decisions
 

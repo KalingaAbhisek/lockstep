@@ -424,7 +424,7 @@ async function restoreVault(event) {
         sessionStorage.setItem(lockTimestampKey(), String(Date.now()));
         clearToast();
         await showUnlockedApp(true);
-        toast(`Vault restored with encryption key version ${version}`);
+        toast(`Vault restored with recovery key version ${version}`);
     } catch (error) {
         if (error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_MISSING") signOut(false, error.message);
         else showInlineError("restore-error", error.message);
@@ -1269,11 +1269,11 @@ async function rotateEncryptionKey() {
     let epoch;try{epoch=beginVaultOperation();}catch{return;}
     const settingsWasOpen = el("settings-dialog").open;
     if (settingsWasOpen) el("settings-dialog").close();
-    const confirmed = await confirmAction({ title:"Rotate encryption key?", message:"A brand-new master key is generated and every account is re-encrypted with it. A NEW recovery key will be downloaded; your old recovery key stops working. Other devices pick up the new key the next time they unlock. Enter your passkey to continue.", label:"Rotate key", iconName:"lock", passkey:true });
+    const confirmed = await confirmAction({ title:"Rotate recovery key?", message:"A brand-new recovery key is generated and every account is re-encrypted with it. The new recovery key will be downloaded; your old recovery key stops working. Other devices pick up the new key the next time they unlock. Enter your passkey to continue.", label:"Rotate recovery key", iconName:"lock", passkey:true });
     const passkey = state.confirmPasskey; state.confirmPasskey = "";
     if (!confirmed) { if (settingsWasOpen) openSettings(); return; }
-    if (passkey.length < 4) { toast("Enter your passkey to rotate the encryption key.", true); if (settingsWasOpen) openSettings(); return; }
-    toast("Rotating encryption key and synchronizing accounts…", false, true);
+    if (passkey.length < 4) { toast("Enter your passkey to rotate the recovery key.", true); if (settingsWasOpen) openSettings(); return; }
+    toast("Rotating recovery key…", false, true);
     let result = null;
     try {
         assertVaultOperation(epoch);
@@ -1293,10 +1293,10 @@ async function rotateEncryptionKey() {
         await syncVault(epoch);
         assertVaultOperation(epoch);
         await loadEntries(true);
-        toast(`Key rotated to version ${result.version}. New recovery key downloaded; store it somewhere private.`);
+        toast(`Recovery key rotated to version ${result.version} and downloaded; store it somewhere private.`);
     } catch (error) {
         if(isVaultLockedError(error))return;
-        if (result) toast(`Key rotated on this device (version ${result.version}) and the new recovery key was downloaded, but syncing failed: ${error.message} Unlock again to retry.`, true);
+        if (result) toast(`Recovery key rotated on this device (version ${result.version}) and downloaded, but syncing failed: ${error.message} Unlock again to retry.`, true);
         else toast(error.message, true);
     }
 }
@@ -1400,7 +1400,7 @@ async function unlockApp(event){
         await showUnlockedApp();toast("Vault unlocked");
     }catch(error){if(error.code==="KEY_MISSING")signOut(false,"Local vault data was cleared. Sign in with Google again.");else if(error.code==="SESSION_EXPIRED")signOut(false,error.message);else showInlineError("unlock-error",error.message);}
 }
-async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=normalizeLockConfig(await api("/api/v1/lock"));state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||300);el("lock-on-screen-lock").checked=Boolean(state.lockConfig.lockOnScreenLock);el("lock-dialog-title").textContent=required?"Create lock protection":"Change lock protection";el("lock-dialog-description").textContent=required?"Create a synchronized passkey before adding or viewing authenticator accounts. When setup finishes, your recovery-key file downloads automatically.":"Choose a new passkey and when Lockstep should lock.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){if(!isVaultLockedError(error))toast(error.message,true);}}
+async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=normalizeLockConfig(await api("/api/v1/lock"));state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||300);el("lock-on-screen-lock").checked=Boolean(state.lockConfig.lockOnScreenLock);el("lock-dialog-title").textContent=required?"Create lock protection":"Change lock protection";el("lock-dialog-description").textContent=required?"Create a passkey before adding or viewing authenticator accounts. When setup finishes, your recovery-key file downloads automatically.":"Choose a new passkey and when Lockstep should lock.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){if(!isVaultLockedError(error))toast(error.message,true);}}
 async function saveLockSettings(event){
     event.preventDefault();hideInlineError("lock-error");
     const lockOnScreenLock=el("lock-on-screen-lock").checked;

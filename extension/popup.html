@@ -130,7 +130,7 @@
         </div>
         <div class="settings-group authenticated-setting hidden">
             <button id="settings-recovery-export" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-export"></use></svg></span><span><strong>Download recovery key</strong><small>Save the key required to restore your vault</small></span></button>
-            <button id="settings-key-rotate" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg></span><span><strong>Rotate encryption key</strong><small>Re-encrypt every account locally</small></span></button>
+            <button id="settings-key-rotate" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg></span><span><strong>Rotate recovery key</strong><small>Replace the key and re-encrypt every account</small></span></button>
         </div>
         <div class="settings-group authenticated-setting hidden">
             <button id="settings-sync" class="settings-row"><span class="settings-icon"><svg aria-hidden="true"><use href="#icon-refresh"></use></svg></span><span>Refresh synchronized accounts</span></button>
@@ -169,7 +169,7 @@
 </form></dialog>
 <dialog id="lock-dialog" class="form-dialog"><form id="lock-form">
     <div class="dialog-heading"><div><span class="dialog-kicker">LOCK EXTENSION AFTER</span><h2 id="lock-dialog-title">Protect your codes</h2></div><button id="lock-dialog-close" class="dialog-close" data-close="lock-dialog" type="button"><svg><use href="#icon-close"></use></svg></button></div>
-    <p id="lock-dialog-description">Your passkey derives a local wrapping key. Only the encrypted vault master key is stored on this device.</p>
+    <p id="lock-dialog-description">Your passkey protects the recovery key stored on this device.</p>
     <label class="form-field"><span>New passkey</span><input id="lock-passcode" type="password" minlength="4" maxlength="128" autocomplete="new-password" placeholder="Minimum 4 characters" required></label>
     <label class="form-field"><span>Confirm passkey</span><input id="lock-confirm" type="password" minlength="4" maxlength="128" autocomplete="new-password" required></label>
     <label class="form-field"><span>Lock extension after</span><select id="lock-timeout"><option value="300">5 minutes of inactivity</option><option value="600">10 minutes of inactivity</option><option value="900">15 minutes of inactivity</option><option value="1200">20 minutes of inactivity</option><option value="1500">25 minutes of inactivity</option><option value="1800">30 minutes of inactivity</option><option value="2100">35 minutes of inactivity</option><option value="2400">40 minutes of inactivity</option><option value="2700">45 minutes of inactivity</option><option value="3000">50 minutes of inactivity</option><option value="3300">55 minutes of inactivity</option><option value="3600">1 hour of inactivity</option><option value="7200">2 hours of inactivity</option><option value="14400">4 hours of inactivity</option><option value="28800">8 hours of inactivity</option><option value="43200">12 hours of inactivity</option><option value="86400">1 day of inactivity</option><option value="172800">2 days of inactivity</option><option value="604800">1 week of inactivity</option></select></label>
