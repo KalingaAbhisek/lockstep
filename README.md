@@ -72,10 +72,11 @@ $env:GOOGLE_APPLICATION_CREDENTIALS = "secrets/firebase-service-account.json"
 ./mvnw.cmd spring-boot:run -pl server
 ```
 
-In a second terminal, serve the independent frontend and open <http://localhost:5173>:
+In a second terminal, build and run the Nginx frontend container, then open <http://localhost:5173/lockstep/>:
 
 ```powershell
-python -m http.server 5173 --directory webapp
+docker build -t lockstep-webapp webapp
+docker run --rm -p 5173:8080 -e LOCKSTEP_API_BASE_URL=http://host.docker.internal:8080 lockstep-webapp
 ```
 
 `webapp/config.js` points to `http://localhost:8080` by default. For a separate production deployment, set it to the API's HTTPS origin, or deploy the included frontend container with `LOCKSTEP_API_BASE_URL`.

@@ -14,15 +14,18 @@ globalThis.LOCKSTEP_CONFIG = Object.freeze({
 
 For a production static host, replace that value with the HTTPS origin of the separately deployed API. Add the frontend's exact origin to the API's `ALLOWED_ORIGINS` value and to the Google OAuth client's Authorized JavaScript origins.
 
-The PWA supports both origin-root hosting and the `/lockstep/` base path. Its assets, manifest, privacy page, and service worker resolve within the current base path. The included Nginx configuration redirects `/lockstep` to `/lockstep/` and serves the application there. Configure an upstream reverse proxy to route `https://kalin.ga/lockstep` and its descendants to this frontend service.
+The production container exposes the PWA only below `/lockstep/`. Its assets, manifest, privacy page, and service worker resolve within that base path. The included Nginx configuration redirects `/lockstep` to `/lockstep/`, serves the application there, and returns an empty `204 No Content` response for `/` and every path outside `/lockstep/`. Configure an upstream reverse proxy to route `https://kalin.ga/lockstep` and its descendants to this frontend service.
 
-## Local static hosting
+## Local hosting
 
-Serve this directory at `http://localhost:5173` with any static HTTP server. For example, when Python is installed:
+Build and run the same Nginx container used in production, then open `http://localhost:5173/lockstep/`:
 
 ```powershell
-python -m http.server 5173 --directory webapp
+docker build -t lockstep-webapp webapp
+docker run --rm -p 5173:8080 -e LOCKSTEP_API_BASE_URL=http://host.docker.internal:8080 lockstep-webapp
 ```
+
+The container returns an empty `204 No Content` response at `http://localhost:5173/` and for every path outside `/lockstep/`.
 
 Start the API separately with `./run-local.ps1`.
 
