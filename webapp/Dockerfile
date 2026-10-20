@@ -9,5 +9,5 @@ COPY docker-entrypoint.d/40-lockstep-config.sh /docker-entrypoint.d/40-lockstep-
 
 RUN chmod +x /docker-entrypoint.d/40-lockstep-config.sh
 
-ENV LOCKSTEP_API_BASE_URL=http://localhost:8080
+ENV LOCKSTEP_API_BASE_URL=https://lockstep.1309.sh
 EXPOSE 80

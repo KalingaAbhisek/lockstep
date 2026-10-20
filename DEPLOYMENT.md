@@ -10,14 +10,14 @@ Use one Google Cloud project for Cloud Run, Firestore, and OAuth. The examples b
 
 ```powershell
 $ProjectId = "YOUR_GOOGLE_CLOUD_PROJECT_ID"
-$Region = "asia-south1"
+$Region = "us-east1"
 $ApiService = "lockstep-api"
 $WebService = "lockstep-web"
 $RuntimeServiceAccount = "lockstep-runtime@$ProjectId.iam.gserviceaccount.com"
 $GoogleClientId = "YOUR_WEB_OAUTH_CLIENT_ID.apps.googleusercontent.com"
 ```
 
-Choose the Cloud Run region before creating Firestore. A nearby region such as `asia-south1` is appropriate for users primarily in India, but the Firestore locations available to the project and the desired user geography should determine the final choice. A Firestore database location cannot be changed after creation.
+This deployment uses the Cloud Run region `us-east1`. Choose the corresponding Firestore location carefully because a Firestore database location cannot be changed after creation.
 
 ## 1. Production prerequisites
 
