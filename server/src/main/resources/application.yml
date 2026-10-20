@@ -11,7 +11,7 @@ server:
 authsync:
   google-web-client-id: ${GOOGLE_WEB_CLIENT_ID:}
   google-extension-client-id: ${GOOGLE_EXTENSION_CLIENT_ID:}
-  allowed-origins: ${ALLOWED_ORIGINS:http://localhost:8080}
+  allowed-origins: ${ALLOWED_ORIGINS:http://localhost:5173}
   firebase-project-id: ${FIREBASE_PROJECT_ID:}
   firebase-credentials-path: ${GOOGLE_APPLICATION_CREDENTIALS:}
 

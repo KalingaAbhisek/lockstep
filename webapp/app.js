@@ -1,5 +1,7 @@
 const el = (id) => document.getElementById(id);
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+const API_BASE_URL = String(globalThis.LOCKSTEP_CONFIG?.apiBaseUrl || location.origin).trim().replace(/\/+$/, "");
+const apiUrl = (path) => `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 const EXPIRING_THRESHOLD_MILLIS = 5_000;
 const THEMES = ["light", "dark"];
 const LOCK_TIMEOUT_LABELS = new Map([
@@ -69,7 +71,7 @@ async function initialize() {
     }
     let config = null;
     try {
-        config = await fetch("/api/v1/config", { cache: "no-store" }).then(response => response.json());
+        config = await fetch(apiUrl("/api/v1/config"), { cache: "no-store" }).then(response => response.json());
         if (config.googleClientId) localStorage.setItem("authsync.googleClientId", config.googleClientId);
     } catch { config = { googleClientId: localStorage.getItem("authsync.googleClientId") }; }
     if (config?.googleClientId && navigator.onLine) {
@@ -452,7 +454,7 @@ function signOut(showMessage = false, message = "Signed out securely") {
 
 async function authenticatedFetch(path, options = {}) {
     const appSession=appSessionToken();
-    const response = await fetch(path, {
+    const response = await fetch(apiUrl(path), {
         ...options, cache: "no-store",
         signal: options.signal || state.vaultRequests.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}`, "X-Lockstep-Client":"web", ...(appSession?{"X-Lockstep-Session":appSession}:{}), ...options.headers }
@@ -476,7 +478,7 @@ async function ensureAppSession() {
 }
 async function registerAppSession() {
     if(!state.token)throw new Error("Sign in with Google first.");
-    const response=await fetch("/api/v1/session",{
+    const response=await fetch(apiUrl("/api/v1/session"),{
         method:"POST",cache:"no-store",
         headers:{"Content-Type":"application/json",Authorization:`Bearer ${state.token}`,"X-Lockstep-Client":"web"}
     });

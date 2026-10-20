@@ -81,8 +81,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function openPrivacyPolicy() {
-    const baseUrl = String(AUTHSYNC_CONFIG.apiBaseUrl || "").replace(/\/+$/, "");
-    if (!baseUrl) throw new Error("The Lockstep server URL is not configured.");
+    const baseUrl = String(AUTHSYNC_CONFIG.webBaseUrl || "").replace(/\/+$/, "");
+    if (!baseUrl) throw new Error("The Lockstep web app URL is not configured.");
     await chrome.tabs.create({ url: `${baseUrl}/privacy.html` });
     return true;
 }

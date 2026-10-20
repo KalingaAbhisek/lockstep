@@ -6,6 +6,7 @@
 secrets
 dist
 extension
+webapp
 **/target
 **/*.log
 _backup_before_restore

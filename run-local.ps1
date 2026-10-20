@@ -10,7 +10,7 @@ if (-not (Test-Path -LiteralPath $envFile)) {
         "# Local Lockstep configuration. This file is ignored by Git.",
         "GOOGLE_WEB_CLIENT_ID=",
         "GOOGLE_EXTENSION_CLIENT_ID=",
-        "ALLOWED_ORIGINS=http://localhost:8080",
+        "ALLOWED_ORIGINS=http://localhost:5173",
         "FIREBASE_PROJECT_ID=",
         "GOOGLE_APPLICATION_CREDENTIALS="
     )

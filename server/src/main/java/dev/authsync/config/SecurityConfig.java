@@ -31,8 +31,7 @@ public class SecurityConfig {
                         .crossOriginOpenerPolicy(coop -> coop.policy(CrossOriginOpenerPolicy.SAME_ORIGIN_ALLOW_POPUPS))
                         .referrerPolicy(referrer -> referrer.policy(ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN)))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/", "/index.html", "/app.js", "/crypto-store.js", "/styles.css", "/manifest.webmanifest",
-                                "/sw.js", "/privacy.html", "/icons/**", "/api/v1/config", "/actuator/health", "/error").permitAll()
+                        .requestMatchers("/api/v1/config", "/actuator/health", "/error").permitAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll())
                 .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()))

@@ -1,11 +1,12 @@
 # Lockstep
 
-Lockstep is a Maven/Spring Boot authenticator service with a mobile-first PWA and a Manifest V3 Chrome extension. The extension can capture the visible tab, let the user select a QR-code region, and synchronize the new TOTP entry with the phone web app.
+Lockstep consists of a Spring Boot synchronization API, a separately deployable mobile-first PWA, and a Manifest V3 Chrome extension. The extension can capture the visible tab, let the user select a QR-code region, and synchronize the new TOTP entry with the phone web app.
 
 ## Repository layout
 
 ```text
-server/       Spring Boot API, encrypted Firestore persistence, and mobile PWA
+server/       Spring Boot API and encrypted Firestore persistence
+webapp/       Standalone static PWA and optional Nginx container
 extension/    Unpacked Manifest V3 Chrome extension
 ARCHITECTURE.md  Security and system-design decisions
 ```
@@ -19,7 +20,7 @@ ARCHITECTURE.md  Security and system-design decisions
 ## Configure Google sign-in
 
 1. In Google Cloud Console, configure the OAuth consent screen.
-2. Create a **Web application** OAuth client. Add `http://localhost:8080` as an authorized JavaScript origin.
+2. Create a **Web application** OAuth client. Add `http://localhost:5173` as an authorized JavaScript origin.
    Google does not accept an HTTP LAN address such as `http://192.168.x.x:8080` as a web OAuth origin. Phone access must use an HTTPS hostname and that exact origin must also be registered.
 3. Load the extension once and copy its extension ID from `chrome://extensions`.
 4. On the Web application OAuth client from step 2, add this exact authorized redirect URI, replacing `<extension-id>` with the copied ID:
@@ -29,7 +30,7 @@ ARCHITECTURE.md  Security and system-design decisions
    ```
 
    The scheme, extension ID, path, and absence of a trailing slash must match exactly. A Google OAuth client of type **Chrome Extension** cannot be used by this implementation because it signs in through `chrome.identity.launchWebAuthFlow` and requests an OpenID Connect ID token.
-5. Put that Web client ID in `extension/config.js`.
+5. Put that Web client ID in `extension/config.js`. Configure `apiBaseUrl` with the backend origin and `webBaseUrl` with the independently hosted PWA origin.
 6. Give the API that ID as both `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_EXTENSION_CLIENT_ID`.
 7. If the consent screen is in **Testing**, add the Google account used for sign-in under **Test users**.
 
@@ -52,7 +53,7 @@ The service account is used only by the Spring Boot server. Never place its JSON
 
 ## Run locally
 
-The easiest local run creates a Git-ignored `.env` for Google and Firebase configuration:
+The easiest backend run creates a Git-ignored `.env` for Google and Firebase configuration:
 
 ```powershell
 .\run-local.ps1
@@ -65,13 +66,21 @@ To configure the variables manually:
 ```powershell
 $env:GOOGLE_WEB_CLIENT_ID = "537289145594-uf4imsthtr2ehnh0e89tsrl0s8qgu19j.apps.googleusercontent.com"
 $env:GOOGLE_EXTENSION_CLIENT_ID = "537289145594-uf4imsthtr2ehnh0e89tsrl0s8qgu19j.apps.googleusercontent.com"
-$env:ALLOWED_ORIGINS = "http://localhost:8080,chrome-extension://lkfonjeagenlaelocnfjlkdpflfnnojo"
+$env:ALLOWED_ORIGINS = "http://localhost:5173,chrome-extension://lkfonjeagenlaelocnfjlkdpflfnnojo"
 $env:FIREBASE_PROJECT_ID = "your-project-id"
 $env:GOOGLE_APPLICATION_CREDENTIALS = "secrets/firebase-service-account.json"
 ./mvnw.cmd spring-boot:run -pl server
 ```
 
-Open <http://localhost:8080> for the phone-friendly web app. Firestore creates a real document for each Google account at `users/{google-subject}` (with verified email/display metadata when supplied by Google), and stores that user's encrypted TOTP records below `users/{google-subject}/authenticatorEntries/{entry-id}`. Existing local H2 records are not migrated automatically.
+In a second terminal, serve the independent frontend and open <http://localhost:5173>:
+
+```powershell
+python -m http.server 5173 --directory webapp
+```
+
+`webapp/config.js` points to `http://localhost:8080` by default. For a separate production deployment, set it to the API's HTTPS origin, or deploy the included frontend container with `LOCKSTEP_API_BASE_URL`.
+
+Firestore creates a real document for each Google account at `users/{google-subject}` (with verified email/display metadata when supplied by Google), and stores that user's encrypted TOTP records below `users/{google-subject}/authenticatorEntries/{entry-id}`.
 
 ## Load the extension
 
@@ -86,7 +95,7 @@ The popup follows the operating system's light/dark preference and also supports
 
 Both clients support editing, device-local ordering and pinning, scannable QR transfer, and additive `.txt` backup import/export. The backup format contains one standard `otpauth://totp/...` URI per line. Importing adds entries and never deletes or replaces existing entries; duplicate URIs are therefore imported as separate entries. Exported files contain usable TOTP secrets and must be protected like passwords.
 
-The web app uses the camera scanner on mobile devices. On laptops and desktop computers, the same action opens the browser's screen-sharing picker and continuously scans the selected screen, window, or tab locally until it finds a TOTP QR code.
+The web app uses the camera scanner on mobile devices. On laptops and desktop computers, the same action opens the browser's screen-sharing picker; the user drags around a QR code in the local preview before it is decoded.
 
 TOTP seeds are encrypted with a per-user AES-256-GCM key before they leave the browser. Firestore receives only ciphertext, a random IV, a key version, and display/TOTP metadata; code generation, QR generation, and backup export happen locally. Use **Download recovery key** after adding the first account and store the file offline. Another device cannot decrypt synchronized entries until that recovery key is imported. If you forget the Lockstep passkey, use **Forgot passkey?** and the current recovery key to create a new passkey.
 
@@ -104,6 +113,11 @@ Signed-in users must configure **Lock extension after** before a master key can 
 
 ```powershell
 ./mvnw.cmd test
+node --check webapp/app.js
+node --check webapp/crypto-store.js
+node --check webapp/sw.js
+node --check extension/popup.js
+node --check extension/service-worker.js
 ```
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) before production deployment. TOTP seeds are encrypted and codes are generated on the client. The server stores only ciphertext. Recovery keys, QR transfers, and text backups must be protected like passwords.

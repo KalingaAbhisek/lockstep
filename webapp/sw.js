@@ -1,5 +1,5 @@
 const CACHE = "lockstep-shell-v68";
-const SHELL = ["/", "/index.html", "/privacy.html", "/styles.css", "/crypto-store.js", "/app.js", "/vendor/jsQR.js", "/vendor/qrcode.js", "/manifest.webmanifest"];
+const SHELL = ["/", "/index.html", "/privacy.html", "/config.js", "/styles.css", "/crypto-store.js", "/app.js", "/vendor/jsQR.js", "/vendor/qrcode.js", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())

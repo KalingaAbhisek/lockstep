@@ -2,16 +2,17 @@
 
 ## Recommended topology
 
-Deploy the Spring Boot API and PWA together as one public **Google Cloud Run** service, use **Firestore in Native mode** in the same Google Cloud project, and distribute the Manifest V3 extension through the **Chrome Web Store**.
+Deploy the Spring Boot API and static PWA independently. The examples below use two public **Google Cloud Run** services, although `webapp/` can instead be hosted by any HTTPS static host. Use **Firestore in Native mode** in the same Google Cloud project and distribute the Manifest V3 extension through the **Chrome Web Store**.
 
-The PWA is already packaged from `server/src/main/resources/static` into the Spring Boot JAR. It does not need a separate frontend host. Keeping it on the API origin also avoids unnecessary cross-origin configuration for the web client.
+The backend image contains only the API. The PWA image is built from `webapp/` and receives the API origin through `LOCKSTEP_API_BASE_URL` at container startup.
 
 Use one Google Cloud project for Cloud Run, Firestore, and OAuth. The examples below use PowerShell and these placeholders:
 
 ```powershell
 $ProjectId = "YOUR_GOOGLE_CLOUD_PROJECT_ID"
 $Region = "asia-south1"
-$Service = "lockstep"
+$ApiService = "lockstep-api"
+$WebService = "lockstep-web"
 $RuntimeServiceAccount = "lockstep-runtime@$ProjectId.iam.gserviceaccount.com"
 $GoogleClientId = "YOUR_WEB_OAUTH_CLIENT_ID.apps.googleusercontent.com"
 ```
@@ -38,7 +39,9 @@ Run the repository checks before every release:
 
 ```powershell
 .\mvnw.cmd test
-node --check server/src/main/resources/static/app.js
+node --check webapp/app.js
+node --check webapp/crypto-store.js
+node --check webapp/sw.js
 node --check extension/popup.js
 node --check extension/service-worker.js
 ```
@@ -70,30 +73,48 @@ In **Google Cloud Console → Google Auth Platform**:
 4. Create an OAuth client with application type **Web application**.
 5. Save its client ID in `$GoogleClientId`.
 
-The production Cloud Run URL and Chrome Web Store extension ID are added to this client later. Do not create a client secret for either browser client, and never put a client secret in the PWA or extension.
+The production frontend URL and Chrome Web Store extension ID are added to this client later. Do not create a client secret for either browser client, and never put a client secret in the PWA or extension.
 
 For a public OAuth app, host a public home page, privacy policy, and terms page on a domain you control. The privacy policy must accurately describe Google profile data, encrypted authenticator metadata/ciphertext, QR capture behavior, retention/deletion, and all processors used.
 
-## 4. Deploy the backend and PWA to Cloud Run
+## 4. Deploy the backend API
 
-The root `Dockerfile` builds the server and packages the PWA into the same image. The first deployment establishes the service URL:
+The root `Dockerfile` builds only the Spring Boot API. The first deployment establishes its URL; the temporary localhost CORS origin is replaced after the frontend is deployed:
 
 ```powershell
-gcloud run deploy $Service `
+gcloud run deploy $ApiService `
   --source . `
   --allow-unauthenticated `
   --service-account $RuntimeServiceAccount `
-  --set-env-vars="GOOGLE_WEB_CLIENT_ID=$GoogleClientId,GOOGLE_EXTENSION_CLIENT_ID=$GoogleClientId,FIREBASE_PROJECT_ID=$ProjectId,ALLOWED_ORIGINS=http://localhost:8080" `
+  --set-env-vars="GOOGLE_WEB_CLIENT_ID=$GoogleClientId,GOOGLE_EXTENSION_CLIENT_ID=$GoogleClientId,FIREBASE_PROJECT_ID=$ProjectId,ALLOWED_ORIGINS=http://localhost:5173" `
   --min=0 `
   --max=10 `
   --memory=512Mi `
   --cpu=1
 ```
 
-Read the assigned HTTPS URL:
+Read the assigned API URL:
 
 ```powershell
-$WebOrigin = gcloud run services describe $Service --format="value(status.url)"
+$ApiOrigin = gcloud run services describe $ApiService --format="value(status.url)"
+$ApiOrigin
+```
+
+## 5. Deploy the frontend PWA
+
+The `webapp/Dockerfile` serves only the static PWA and renders `config.js` from the API URL at startup:
+
+```powershell
+gcloud run deploy $WebService `
+  --source webapp `
+  --allow-unauthenticated `
+  --set-env-vars="LOCKSTEP_API_BASE_URL=$ApiOrigin" `
+  --min=0 `
+  --max=10 `
+  --memory=256Mi `
+  --cpu=1
+
+$WebOrigin = gcloud run services describe $WebService --format="value(status.url)"
 $WebOrigin
 ```
 
@@ -103,25 +124,26 @@ In the Web OAuth client, add `$WebOrigin` exactly under **Authorized JavaScript 
 https://lockstep-xxxxxxxxxx-xx.a.run.app
 ```
 
-Redeploy the configuration with the production web origin:
+Update API CORS with the production frontend origin:
 
 ```powershell
-gcloud run services update $Service `
+gcloud run services update $ApiService `
   --update-env-vars="GOOGLE_WEB_CLIENT_ID=$GoogleClientId,GOOGLE_EXTENSION_CLIENT_ID=$GoogleClientId,FIREBASE_PROJECT_ID=$ProjectId,ALLOWED_ORIGINS=$WebOrigin"
 ```
 
 Open `$WebOrigin`, sign in, configure lock protection, add a disposable test account, refresh, sign out/in, unlock, and verify the account remains available. Also install the PWA once on a phone and test offline code display.
 
-### Optional custom domain
+### Optional custom domains
 
-A custom HTTPS domain is preferable for a public product and is required for a polished OAuth home/privacy presence. Map a domain to Cloud Run or place a supported Google load balancer in front of it. After the domain works:
+A custom HTTPS domain is preferable for a public product and is required for a polished OAuth home/privacy presence. Use separate web and API hostnames, such as `app.example.com` and `api.example.com`. After they work:
 
 1. Add its exact origin to the OAuth client's Authorized JavaScript origins.
-2. Change `$WebOrigin` to the custom origin.
-3. Update `ALLOWED_ORIGINS` as shown below.
-4. Use the custom origin in the extension configuration and host permission.
+2. Set `$WebOrigin` and `$ApiOrigin` to their custom origins.
+3. Redeploy the frontend with `LOCKSTEP_API_BASE_URL=$ApiOrigin`.
+4. Update API `ALLOWED_ORIGINS` as shown below.
+5. Use the API origin for extension API access and the web origin for its privacy-policy link.
 
-## 5. Obtain the permanent Chrome extension ID
+## 6. Obtain the permanent Chrome extension ID
 
 The published extension ID must be known before the final OAuth and CORS settings can be completed.
 
@@ -138,7 +160,7 @@ The published extension ID must be known before the final OAuth and CORS setting
 
 The extension currently needs production-quality extension icons and store artwork before submission. Add at least the normal Manifest V3 icon assets and declare them in `manifest.json`; also prepare the screenshots and promotional assets requested by the Store dashboard.
 
-## 6. Connect the production extension
+## 7. Connect the production extension
 
 Set the ID and origin locally:
 
@@ -159,7 +181,8 @@ Update `extension/config.js`:
 
 ```javascript
 globalThis.AUTHSYNC_CONFIG = {
-  apiBaseUrl: "https://YOUR_PRODUCTION_HOST",
+  apiBaseUrl: "https://YOUR_API_HOST",
+  webBaseUrl: "https://YOUR_WEBAPP_HOST",
   googleClientId: "YOUR_WEB_OAUTH_CLIENT_ID.apps.googleusercontent.com"
 };
 ```
@@ -167,19 +190,19 @@ globalThis.AUTHSYNC_CONFIG = {
 Replace the development host permission in `extension/manifest.json`:
 
 ```json
-"host_permissions": ["https://YOUR_PRODUCTION_HOST/*"]
+"host_permissions": ["https://YOUR_API_HOST/*"]
 ```
 
 Update Cloud Run CORS so it contains the exact PWA and extension origins:
 
 ```powershell
 $AllowedOrigins = "$WebOrigin,$ExtensionOrigin"
-gcloud run services update $Service --update-env-vars="ALLOWED_ORIGINS=$AllowedOrigins"
+gcloud run services update $ApiService --update-env-vars="ALLOWED_ORIGINS=$AllowedOrigins"
 ```
 
 Keep `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_EXTENSION_CLIENT_ID` set to the Web OAuth client ID used by the two clients. Cloud Run creates a new revision when the environment changes.
 
-## 7. Test the store build locally
+## 8. Test the store build locally
 
 Increment `version` in `extension/manifest.json` for every uploaded release. Then load the production-configured `extension` directory through `chrome://extensions` and test:
 
@@ -202,7 +225,7 @@ Compress-Archive -Path extension\* -DestinationPath "dist\lockstep-extension-$Ve
 
 Inspect the ZIP and verify that `manifest.json` is at its root.
 
-## 8. Complete the Chrome Web Store listing
+## 9. Complete the Chrome Web Store listing
 
 In the item dashboard complete:
 
@@ -219,7 +242,7 @@ In the item dashboard complete:
 
 Upload the final ZIP, submit it for review, and wait for approval. A new upload must have a higher manifest version.
 
-## 9. Final production checks
+## 10. Final production checks
 
 After the Store version is available:
 
@@ -231,15 +254,24 @@ After the Store version is available:
 6. Keep at least one recovery key offline and test recovery using disposable data.
 7. Remove unused localhost/test origins and test users when production rollout is complete.
 
-## 10. Releasing updates
+## 11. Releasing updates
 
-For the web/backend:
+For the API:
 
 ```powershell
 .\mvnw.cmd test
-gcloud run deploy $Service --source . --service-account $RuntimeServiceAccount
+gcloud run deploy $ApiService --source . --service-account $RuntimeServiceAccount
 ```
 
-Cloud Run keeps prior revisions so a traffic rollback remains possible.
+For the frontend:
+
+```powershell
+node --check webapp/app.js
+node --check webapp/crypto-store.js
+node --check webapp/sw.js
+gcloud run deploy $WebService --source webapp --update-env-vars="LOCKSTEP_API_BASE_URL=$ApiOrigin"
+```
+
+The API and frontend now have independent revisions and can be rolled back separately.
 
 For the extension, increment the manifest version, run the tests, rebuild the ZIP, upload it to the existing Chrome Web Store item, and submit the update for review. Never create a second Store item for an ordinary update because that would change the extension ID and break its OAuth redirect/origin configuration.

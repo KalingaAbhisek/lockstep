@@ -5,7 +5,7 @@
 ```text
 Chrome extension ─┐
                   ├─ local AES-256-GCM vault + local TOTP generation
-Mobile web/PWA ───┘                 │
+Static web/PWA ───┘                 │
                                     ├─ IndexedDB encrypted replica and outbox
                                     └─ HTTPS + Google ID token ─> Spring Boot API ─> Firestore ciphertext
 ```
@@ -78,6 +78,7 @@ The Firebase Admin SDK bypasses Firestore Security Rules, so the API must valida
 - Terminate TLS at the application or trusted proxy.
 - Keep the Firebase service account outside the repository and grant minimum required permissions.
 - Configure exact web and extension origins in `ALLOWED_ORIGINS`.
+- Deploy `webapp/` and `server/` independently. Configure the PWA with the API origin through `config.js` (or `LOCKSTEP_API_BASE_URL` in its container); never place Firebase credentials in the frontend deployment.
 - Never log request bodies for encrypted-entry writes because metadata can still be sensitive.
 - Back up Firestore ciphertext and user metadata together. Recovery still requires the user's recovery key.
 - Lock protection is a presentation/privacy layer; local device and OS security remain part of the threat model.
