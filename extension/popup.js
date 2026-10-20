@@ -743,11 +743,11 @@ async function send(type, extra = {}) {
         const response = await chrome.runtime.sendMessage({ type, ...extra });
         if (response && typeof response.ok === "boolean") {
             if(!response.ok&&response.code==="VAULT_LOCKED")showLocked();
-            if(!response.ok&&response.code==="SESSION_REVOKED"){
+            if(!response.ok&&(response.code==="SESSION_REVOKED"||response.code==="SESSION_EXPIRED")){
                 await chrome.storage.local.remove(SESSION_REVOKED_NOTICE_KEY);
                 isAuthenticated=false;
                 showSignedOut();
-                status(response.error||"This extension session was replaced by a login on another device.",true);
+                status(response.error||(response.code==="SESSION_EXPIRED"?"Your 30-day Lockstep session has expired. Sign in with Google again.":"This extension session was replaced by a login on another device."),true);
             }
             return response;
         }

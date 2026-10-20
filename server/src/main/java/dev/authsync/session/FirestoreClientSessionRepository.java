@@ -6,6 +6,8 @@ import com.google.cloud.firestore.Firestore;
 import org.springframework.stereotype.Repository;
 
 import java.util.Map;
+import java.time.Instant;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 
 @Repository
@@ -15,20 +17,31 @@ public class FirestoreClientSessionRepository implements ClientSessionRepository
     public FirestoreClientSessionRepository(Firestore firestore) { this.firestore = firestore; }
 
     @Override
-    public void replace(String googleSubject, ClientType clientType, String tokenHash) {
+    public void replace(String googleSubject, ClientType clientType, StoredSession session) {
         await(firestore.collection("users").document(googleSubject)
                 .collection("clientSessions").document(clientType.value())
                 .set(Map.of(
-                        "tokenHash", tokenHash,
+                        "tokenHash", session.tokenHash(),
+                        "email", session.email(),
+                        "displayName", session.displayName(),
+                        "expiresAt", Timestamp.ofTimeSecondsAndNanos(session.expiresAt().getEpochSecond(), session.expiresAt().getNano()),
                         "updatedAt", Timestamp.now(),
-                        "schemaVersion", 1)));
+                        "schemaVersion", 2)));
     }
 
     @Override
-    public boolean matches(String googleSubject, ClientType clientType, String tokenHash) {
+    public Optional<StoredSession> find(String googleSubject, ClientType clientType) {
         DocumentSnapshot document = await(firestore.collection("users").document(googleSubject)
                 .collection("clientSessions").document(clientType.value()).get());
-        return document.exists() && tokenHash.equals(document.getString("tokenHash"));
+        if(!document.exists())return Optional.empty();
+        Timestamp expiresAt=document.getTimestamp("expiresAt");
+        String tokenHash=document.getString("tokenHash");
+        if(expiresAt==null||tokenHash==null||tokenHash.isBlank())return Optional.empty();
+        return Optional.of(new StoredSession(
+                tokenHash,
+                String.valueOf(document.getString("email") == null ? "" : document.getString("email")),
+                String.valueOf(document.getString("displayName") == null ? "" : document.getString("displayName")),
+                Instant.ofEpochSecond(expiresAt.getSeconds(),expiresAt.getNanos())));
     }
 
     private static <T> T await(com.google.api.core.ApiFuture<T> future) {

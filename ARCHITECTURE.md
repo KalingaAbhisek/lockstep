@@ -24,7 +24,7 @@ The clients parse authenticator URIs, encrypt seeds, generate verification codes
 8. Rotation creates a new random 256-bit vault master key, increments the public version, re-encrypts locally, publishes the new wrapped key before replacement ciphertext, and queues idempotent entry updates. It produces a new recovery key and invalidates the previous one.
 9. Pin state and explicit ordering are device-local and never sent to the API.
 10. QR transfer and text backup deliberately reveal plaintext locally after a disclosure warning. No third-party QR service is used.
-11. The API issues a random, hashed server-side client session after Google authentication. Each Google subject has one `web` slot and one `extension` slot. A new login replaces only the matching slot, and every authenticated API request validates both the client channel and session token.
+11. The API issues a random, hashed server-side client session after Google authentication. Each session has a fixed 30-day lifetime measured from that Google sign-in; API activity and silent Google credential renewal do not extend it. Each Google subject has one `web` slot and one `extension` slot. A new login replaces only the matching slot, and every authenticated API request validates the subject, client channel, session token, and fixed expiry.
 
 ## Request and offline flow
 
@@ -54,8 +54,11 @@ Rotate:
 users/{google-subject}
   clientSessions/{web|extension}
     tokenHash
+    email
+    displayName
+    expiresAt
     updatedAt
-    schemaVersion = 1
+    schemaVersion = 2
   authenticatorEntries/{uuid-v4}
     issuer
     accountName

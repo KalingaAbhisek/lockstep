@@ -62,6 +62,8 @@ function showLoader() {
 async function initialize() {
     applyTheme(THEMES.includes(state.theme) ? state.theme : "light");
     renderConnectivityStatus(navigator.onLine);
+    if(state.token&&!state.subject){state.token=null;sessionStorage.removeItem("authsync.idToken");}
+    if(state.subject&&appSessionHasExpired())signOut(false,"Your 30-day Lockstep session has expired. Sign in with Google again.");
     if (state.token) {
         const claims = tokenClaims(state.token);
         state.displayName = claims?.name || claims?.given_name || claims?.email || state.displayName;
@@ -220,7 +222,9 @@ function showStoredSessionRevokedNotice() {
 }
 
 async function checkActiveSession() {
-    if(!navigator.onLine||!state.token)return;
+    if(!state.subject)return;
+    if(appSessionHasExpired()){signOut(false,"Your 30-day Lockstep session has expired. Sign in with Google again.");return;}
+    if(!navigator.onLine||!appSessionToken())return;
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),5000);
     try{
@@ -228,6 +232,7 @@ async function checkActiveSession() {
         await authenticatedFetch("/api/v1/session",{signal:controller.signal});
     }catch(error){
         if(error.code==="SESSION_REVOKED"&&(state.token||state.subject))showSessionRevoked(error.message);
+        else if(error.code==="SESSION_EXPIRED"&&(state.token||state.subject))signOut(false,error.message);
     }finally{clearTimeout(timeout);}
 }
 
@@ -448,6 +453,7 @@ function signOut(showMessage = false, message = "Signed out securely") {
     clearTimeout(state.tokenExpiryTimer);state.tokenExpiryTimer=null;
     if (el("settings-dialog").open) el("settings-dialog").close();
     if (state.subject) LockstepVault.lock(state.subject);
+    const owner=state.subject||tokenClaims(state.token)?.sub||null;
     const unlockKey = state.token || state.subject ? lockTimestampKey() : null;
     const sessionKey = state.token || state.subject ? sessionKeyStorageKey() : null;
     state.token = null;
@@ -455,10 +461,12 @@ function signOut(showMessage = false, message = "Signed out securely") {
     state.entries = [];
     state.editing = false;
     sessionStorage.removeItem("authsync.idToken");
+    localStorage.removeItem("authsync.idToken");
     sessionStorage.removeItem("authsync.restoreAuthorized");
     state.restoreAuthorized = false;
     localStorage.removeItem("authsync.lastSubject");
     localStorage.removeItem("authsync.displayName");
+    if(owner){localStorage.removeItem(`authsync.appSession.web.${owner}`);localStorage.removeItem(`authsync.appSessionExpiry.web.${owner}`);}
     state.displayName = "";
     if (unlockKey) sessionStorage.removeItem(unlockKey);
     if (sessionKey) sessionStorage.removeItem(sessionKey);
@@ -476,25 +484,46 @@ function signOut(showMessage = false, message = "Signed out securely") {
 }
 
 async function authenticatedFetch(path, options = {}) {
+    if(state.subject&&appSessionHasExpired()){
+        const error=new Error("Your 30-day Lockstep session has expired. Sign in with Google again.");
+        error.code="SESSION_EXPIRED";
+        signOut(false,error.message);
+        throw error;
+    }
     const appSession=appSessionToken();
+    const googleToken=state.token&&!isExpired(state.token)?state.token:"";
     const response = await fetch(apiUrl(path), {
         ...options, cache: "no-store",
         signal: options.signal || state.vaultRequests.signal,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}`, "X-Lockstep-Client":"web", ...(appSession?{"X-Lockstep-Session":appSession}:{}), ...options.headers }
+        headers: { "Content-Type":"application/json", ...(googleToken?{Authorization:`Bearer ${googleToken}`}:{"X-Lockstep-Subject":state.subject}), "X-Lockstep-Client":"web", ...(appSession?{"X-Lockstep-Session":appSession}:{}), ...options.headers }
     });
     if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         const error = new Error(body.error || (response.status === 401 ? "Session expired. Sign in with Google again." : `Request failed (${response.status})`));
         error.code = body.code || (response.status === 401 ? "SESSION_EXPIRED" : "REQUEST_FAILED");
         if(error.code==="SESSION_REVOKED")showSessionRevoked(error.message);
+        else if(error.code==="SESSION_EXPIRED")signOut(false,error.message);
         throw error;
     }
     return response;
 }
 
 function appSessionStorageKey(subject=ownerSubject()) { return `authsync.appSession.web.${subject}`; }
+function appSessionExpiryStorageKey(subject=ownerSubject()) { return `authsync.appSessionExpiry.web.${subject}`; }
+function appSessionHasExpired(subject=state.subject){
+    if(!subject)return false;
+    try{
+        const token=localStorage.getItem(appSessionStorageKey(subject));
+        const expiresAt=Number(localStorage.getItem(appSessionExpiryStorageKey(subject))||0);
+        return Boolean(token)&&(!expiresAt||expiresAt<=Date.now());
+    }catch{return false;}
+}
 function appSessionToken() {
-    try{return localStorage.getItem(appSessionStorageKey())||"";}catch{return "";}
+    try{
+        const token=localStorage.getItem(appSessionStorageKey())||"";
+        const expiresAt=Number(localStorage.getItem(appSessionExpiryStorageKey())||0);
+        return token&&expiresAt>Date.now()?token:"";
+    }catch{return "";}
 }
 async function ensureAppSession() {
     return appSessionToken() || registerAppSession();
@@ -512,6 +541,7 @@ async function registerAppSession() {
         throw error;
     }
     localStorage.setItem(appSessionStorageKey(),body.sessionToken);
+    if(body.expiresAtEpochMillis)localStorage.setItem(appSessionExpiryStorageKey(),String(body.expiresAtEpochMillis));
     return body.sessionToken;
 }
 
@@ -543,9 +573,10 @@ function scheduleGoogleSessionExpiry() {
     const expiresAt=Number(tokenClaims(state.token)?.exp||0)*1000;
     if(!expiresAt)return;
     const remaining=expiresAt-Date.now();
-    if(remaining<=0){signOut(false,"Google session expired. Sign in again.");return;}
-    state.tokenExpiryTimer=setTimeout(()=>signOut(false,"Google session expired. Sign in again."),remaining);
+    if(remaining<=0){expireGoogleCredential();return;}
+    state.tokenExpiryTimer=setTimeout(expireGoogleCredential,remaining);
 }
+function expireGoogleCredential(){state.token=null;sessionStorage.removeItem("authsync.idToken");if(!state.subject||!appSessionToken())signOut(false,"Session expired. Sign in with Google again.");}
 
 function vaultTransport() {
     return {
@@ -556,7 +587,7 @@ function vaultTransport() {
 }
 
 async function flushPendingVault(owner = state.subject) {
-    if(!owner||!state.token)return null;
+    if(!owner||!appSessionToken())return null;
     try{return await LockstepVault.flushOutbox(owner,vaultTransport());}
     catch(error){if(error.code==="SESSION_EXPIRED")signOut(false,error.message);return null;}
 }
@@ -569,13 +600,13 @@ function stopPendingSyncRetry() {
 
 function schedulePendingSync(delay = 0) {
     if(state.pendingSyncRunning){state.pendingSyncRequested=true;return;}
-    if(state.pendingSyncTimer!==null||!navigator.onLine||!state.subject||!state.token)return;
+    if(state.pendingSyncTimer!==null||!navigator.onLine||!state.subject||!appSessionToken())return;
     state.pendingSyncTimer=setTimeout(runPendingSyncRetry,delay);
 }
 
 async function runPendingSyncRetry() {
     state.pendingSyncTimer=null;
-    if(state.pendingSyncRunning||!navigator.onLine||!state.subject||!state.token)return;
+    if(state.pendingSyncRunning||!navigator.onLine||!state.subject||!appSessionToken())return;
     state.pendingSyncRunning=true;
     state.pendingSyncRequested=false;
     let pending=0;
@@ -587,7 +618,7 @@ async function runPendingSyncRetry() {
     } catch { pending=1; }
     finally {
         state.pendingSyncRunning=false;
-        if((pending>0||state.pendingSyncRequested)&&navigator.onLine&&state.subject&&state.token)schedulePendingSync(pending>0?10000:0);
+        if((pending>0||state.pendingSyncRequested)&&navigator.onLine&&state.subject&&appSessionToken())schedulePendingSync(pending>0?10000:0);
     }
 }
 

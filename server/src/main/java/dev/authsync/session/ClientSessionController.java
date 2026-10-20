@@ -24,8 +24,7 @@ public class ClientSessionController {
     }
 
     @GetMapping
-    Map<String, Object> status(@AuthenticationPrincipal Jwt jwt,
-                               @RequestHeader(ClientSessionValidationFilter.CLIENT_HEADER) String clientType) {
-        return Map.of("active", true, "clientType", sessions.clientType(jwt, clientType).value());
+    Map<String, Object> status(@RequestHeader(ClientSessionValidationFilter.CLIENT_HEADER) String clientType) {
+        return Map.of("active", true, "clientType", sessions.parseClientType(clientType).value());
     }
 }

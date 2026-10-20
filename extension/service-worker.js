@@ -39,6 +39,7 @@ async function retryPendingSync() {
         if(!navigator.onLine){await schedulePendingSync(10000);return;}
         try{await LockstepVault.flushOutbox(owner,transport());lastSyncError=null;}
         catch(error){lastSyncError=error?.message||"Synchronization failed.";}
+        if(!(await chrome.storage.local.get("vaultSubject")).vaultSubject){await stopPendingSync();return;}
         pending=await LockstepVault.pendingCount(owner);
         if(pending)await schedulePendingSync(10000);
         else await stopPendingSync();
@@ -138,20 +139,20 @@ async function logout() {
     try { LockstepVault.lock(await subject()); } catch {}
     await stopPendingSync();
     await chrome.storage.session.clear();
-    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId"]);
+    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId", "appSessionExpiry", "idToken", "tokenExpiry"]);
 }
 
 async function invalidateAuthentication(message = "") {
     try { LockstepVault.lock(await subject()); } catch {}
     await stopPendingSync();
     await chrome.storage.session.clear();
-    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId"]);
+    await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId", "appSessionExpiry", "idToken", "tokenExpiry"]);
     if(message)await chrome.storage.local.set({[SESSION_REVOKED_NOTICE_KEY]:message});
 }
 
 async function subject() {
-    const session = await chrome.storage.session.get("idToken");
-    if (session.idToken) return parseClaims(session.idToken).sub;
+    const tokenState=await storedGoogleToken();
+    if(tokenState.idToken)return parseClaims(tokenState.idToken).sub;
     const local = await chrome.storage.local.get(["vaultSubject", "vaultDisplayName"]);
     if (!local.vaultSubject) throw new Error("Sign in to Lockstep first.");
     return local.vaultSubject;
@@ -229,18 +230,21 @@ async function touchVault() {
 }
 
 async function token() {
-    const session = await chrome.storage.session.get(["idToken", "tokenExpiry"]);
-    if (session.idToken && session.tokenExpiry >= Date.now() + 30000) return session.idToken;
+    const stored=await storedGoogleToken();
+    if(stored.idToken&&stored.tokenExpiry>=Date.now()+30000)return stored.idToken;
     try {
         tokenRefreshPromise ||= authorize(false).finally(() => { tokenRefreshPromise = null; });
         await tokenRefreshPromise;
-        const refreshed = await chrome.storage.session.get(["idToken", "tokenExpiry"]);
+        const refreshed = await storedGoogleToken();
         if (refreshed.idToken && refreshed.tokenExpiry >= Date.now() + 30000) return refreshed.idToken;
     } catch {}
+    await chrome.storage.session.remove(["idToken","tokenExpiry"]);
     throw coded("SESSION_EXPIRED", "Sign in again to synchronize.");
 }
 
-async function tokenValid() { try { await token(); return true; } catch { return false; } }
+async function storedGoogleToken(){
+    return chrome.storage.session.get(["idToken","tokenExpiry"]);
+}
 
 async function backendAccountExists() {
     return (await api("/api/v1/account")).exists;
@@ -250,17 +254,18 @@ async function backendAccountExists() {
 // and does this device actually hold the vault master key.
 async function vaultState() {
     const local = await chrome.storage.local.get(["vaultSubject", "vaultDisplayName"]);
-    const session = await chrome.storage.session.get("idToken");
+    const session = await storedGoogleToken();
     const sessionClaims = session.idToken ? parseClaims(session.idToken) : null;
     const owner = sessionClaims?.sub || local.vaultSubject;
     if (!owner) return { hasSubject: false };
-    const validToken = await tokenValid();
-    const refreshedSession = validToken ? await chrome.storage.session.get("idToken") : session;
+    await activeAppSession();
+    const validSession = true;
+    const refreshedSession = await storedGoogleToken();
     const refreshedClaims = refreshedSession.idToken ? parseClaims(refreshedSession.idToken) : sessionClaims;
     const refreshedLocal = await chrome.storage.local.get("vaultDisplayName");
     const sessionFlags = await chrome.storage.session.get(["newAccountSetupAuthorized", "restoreAuthorized"]);
     let accountExists = null;
-    if (validToken) {
+    if (validSession && navigator.onLine) {
         try {
             accountExists = await backendAccountExists();
             if (accountExists) {
@@ -279,7 +284,7 @@ async function vaultState() {
     return {
         hasSubject: true,
         displayName: refreshedClaims?.name || refreshedClaims?.given_name || refreshedClaims?.email || refreshedLocal.vaultDisplayName || local.vaultDisplayName || "",
-        tokenValid: validToken,
+        tokenValid: validSession,
         online: navigator.onLine,
         accountExists,
         newAccountSetupAuthorized: Boolean(sessionFlags.newAccountSetupAuthorized),
@@ -364,7 +369,7 @@ async function exportEntries() { return LockstepVault.exportText(await subject()
 async function localOtpUri(id) { return LockstepVault.otpAuthUri(await subject(), id); }
 async function exportRecoveryKey() {
     const owner = await subject();
-    if (await tokenValid()) {
+    if (navigator.onLine&&await activeAppSession().then(()=>true).catch(()=>false)) {
         const config = await api("/api/v1/lock");
         const changed = await LockstepVault.synchronizeWrappedKey(owner, config.wrappedKey);
         await chrome.storage.local.set({ cachedLockConfig: config });
@@ -373,7 +378,7 @@ async function exportRecoveryKey() {
     return LockstepVault.exportRecoveryKey(owner);
 }
 async function importRecoveryKey(value, passcode) {
-    await token(); // fail early (SESSION_EXPIRED) before touching local state
+    await activeAppSession(); // fail before touching local state if the 30-day session ended
     const owner = await subject();
     await synchronize(true); // restoration is the explicit locked flow allowed to download ciphertext for key verification
     const version = await LockstepVault.importRecoveryKey(owner, value, passcode);
@@ -386,7 +391,7 @@ async function importRecoveryKey(value, passcode) {
     return { version, entries: await localEntries() };
 }
 async function rotateEncryptionKey(passcode) {
-    await token(); // rotation needs a live session: the new wrapped key must reach the server
+    await activeAppSession(); // rotation needs a live session: the new wrapped key must reach the server
     const owner = await subject();
     await synchronize(); // fully synced before the key changes
     const remaining = await LockstepVault.pendingCount(owner);
@@ -417,28 +422,38 @@ async function registerAppSession() {
     if(!response.ok||!body.sessionToken){
         throw coded(body.code||(response.status===401?"SESSION_EXPIRED":"REQUEST_FAILED"),body.error||(response.status===401?"Sign in again.":`Request failed (${response.status})`));
     }
-    await chrome.storage.local.set({appSessionId:body.sessionToken});
+    await chrome.storage.local.set({appSessionId:body.sessionToken,appSessionExpiry:Number(body.expiresAtEpochMillis)||0});
     return body.sessionToken;
 }
 
 async function appSession() {
-    const stored=(await chrome.storage.local.get("appSessionId")).appSessionId;
-    return stored||registerAppSession();
+    const stored=await chrome.storage.local.get(["appSessionId","appSessionExpiry"]);
+    if(stored.appSessionId&&Number(stored.appSessionExpiry)>Date.now())return stored.appSessionId;
+    if(stored.appSessionId){
+        const error=coded("SESSION_EXPIRED","Your 30-day Lockstep session has expired. Sign in with Google again.");
+        await invalidateAuthentication(error.message);
+        throw error;
+    }
+    throw coded("SESSION_EXPIRED","Sign in with Google to start a new 30-day Lockstep session.");
 }
+
+async function activeAppSession(){return appSession();}
 
 async function checkConnectivity() {
     return navigator.onLine;
 }
 
 async function checkActiveSession() {
-    if(!navigator.onLine)return false;
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),5000);
     try{
         const local=await chrome.storage.local.get("vaultSubject");
-        if(local.vaultSubject)await api("/api/v1/session",{signal:controller.signal});
+        if(!local.vaultSubject)return false;
+        await activeAppSession();
+        if(!navigator.onLine)return false;
+        await api("/api/v1/session",{signal:controller.signal});
         return true;
-    }catch(error){if(error?.code==="SESSION_REVOKED")throw error;return false;}
+    }catch(error){if(error?.code==="SESSION_REVOKED"||error?.code==="SESSION_EXPIRED")throw error;return false;}
     finally{clearTimeout(timeout);}
 }
 
@@ -480,7 +495,7 @@ async function getLockConfig() {
 }
 async function setLockConfig(passcode, timeoutSeconds, lockOnScreenLock, initialSetup = false) {
     const vaultSubject = await subject();
-    await token(); // SESSION_EXPIRED up front, before any local key material changes
+    await activeAppSession(); // SESSION_EXPIRED up front, before any local key material changes
     let config;
     if (initialSetup) {
         // Never mint a new master key if the server already holds ciphertext we cannot decrypt
@@ -503,7 +518,7 @@ async function setLockConfig(passcode, timeoutSeconds, lockOnScreenLock, initial
 async function verifyLock(passcode) {
     const owner = await subject();
     let serverAvailable = false;
-    if (await tokenValid()) {
+    if (navigator.onLine&&await activeAppSession().then(()=>true).catch(()=>false)) {
         try {
             const latest = await api("/api/v1/lock");
             await LockstepVault.synchronizeWrappedKey(owner, latest.wrappedKey);
@@ -554,7 +569,7 @@ async function lockVault() {
 }
 async function resetVault() {
     const owner = await subject();
-    await token();
+    await activeAppSession();
     await api("/api/v1/vault", { method: "DELETE" });
     await LockstepVault.clearSubject(owner);
     await chrome.storage.local.remove("cachedLockConfig");
@@ -567,7 +582,10 @@ async function removeLock() {
 }
 
 async function api(path, options = {}) {
-    const headers={ "Content-Type":"application/json", Authorization:`Bearer ${await token()}`, "X-Lockstep-Client":"extension", "X-Lockstep-Session":await appSession(), ...options.headers };
+    const sessionToken=await appSession();
+    const googleToken=await token().catch(()=>"");
+    const owner=await subject();
+    const headers={ "Content-Type":"application/json", ...(googleToken?{Authorization:`Bearer ${googleToken}`}:{"X-Lockstep-Subject":owner}), "X-Lockstep-Client":"extension", "X-Lockstep-Session":sessionToken, ...options.headers };
     let response;
     try{
         response=await fetch(AUTHSYNC_CONFIG.apiBaseUrl+path,{...options,cache:"no-store",headers});
@@ -577,7 +595,7 @@ async function api(path, options = {}) {
     if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         const error=coded(body.code||(response.status===401?"SESSION_EXPIRED":"REQUEST_FAILED"),body.error||(response.status===401?"Sign in again.":`Request failed (${response.status})`));
-        if(error.code==="SESSION_REVOKED")await invalidateAuthentication(error.message);
+        if(error.code==="SESSION_REVOKED"||error.code==="SESSION_EXPIRED")await invalidateAuthentication(error.message);
         throw error;
     }
     return response.status === 204 ? null : response.json();

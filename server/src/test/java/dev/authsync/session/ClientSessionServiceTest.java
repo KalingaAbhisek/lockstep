@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +42,22 @@ class ClientSessionServiceTest {
         assertThat(service.isActive(extension, "extension", extensionToken)).isTrue();
     }
 
+    @Test
+    void sessionExpiresThirtyDaysAfterGoogleSignIn() {
+        Jwt web=jwt("user-1","shared-client");
+        ClientSessionService.RegisteredSession registered=service.register(web,"web");
+
+        assertThat(registered.expiresAtEpochMillis()).isBetween(
+                Instant.now().plus(ClientSessionService.SESSION_LIFETIME).minusSeconds(5).toEpochMilli(),
+                Instant.now().plus(ClientSessionService.SESSION_LIFETIME).plusSeconds(5).toEpochMilli());
+        repository.expire("user-1",ClientType.WEB);
+        assertThat(service.isActive(web,"web",registered.sessionToken())).isFalse();
+        assertThat(service.validate(web,"web",registered.sessionToken()).status())
+                .isEqualTo(ClientSessionService.SessionStatus.EXPIRED);
+        assertThat(service.validate(web,"web","a-replaced-token").status())
+                .isEqualTo(ClientSessionService.SessionStatus.REVOKED);
+    }
+
     private static Jwt jwt(String subject, String audience) {
         Instant now = Instant.now();
         return Jwt.withTokenValue("google-token")
@@ -53,16 +70,22 @@ class ClientSessionServiceTest {
     }
 
     private static final class InMemoryRepository implements ClientSessionRepository {
-        private final Map<String, String> sessions = new HashMap<>();
-
         @Override
-        public void replace(String googleSubject, ClientType clientType, String tokenHash) {
-            sessions.put(googleSubject + ":" + clientType.value(), tokenHash);
+        public void replace(String googleSubject, ClientType clientType, StoredSession session) {
+            sessions.put(googleSubject + ":" + clientType.value(), session);
         }
 
         @Override
-        public boolean matches(String googleSubject, ClientType clientType, String tokenHash) {
-            return tokenHash.equals(sessions.get(googleSubject + ":" + clientType.value()));
+        public Optional<StoredSession> find(String googleSubject, ClientType clientType) {
+            return Optional.ofNullable(sessions.get(googleSubject + ":" + clientType.value()));
         }
+
+        void expire(String googleSubject,ClientType clientType){
+            String key=googleSubject+":"+clientType.value();
+            StoredSession current=sessions.get(key);
+            sessions.put(key,new StoredSession(current.tokenHash(),current.email(),current.displayName(),Instant.now().minusSeconds(1)));
+        }
+
+        private final Map<String, StoredSession> sessions = new HashMap<>();
     }
 }
