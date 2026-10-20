@@ -20,7 +20,7 @@
     <article class="policy">
         <p class="eyebrow">LEGAL</p>
         <h1>Privacy Policy</h1>
-        <p class="updated">Effective and last updated: October 20, 2026</p>
+        <p class="updated">Effective and last updated: October 21, 2026</p>
         <p class="summary">Lockstep is designed to generate authenticator codes locally and to keep your TOTP secrets encrypted end to end. Some account details needed to synchronize and display your vault are stored on the server in readable form, as described below. This policy explains what data is handled, why it is needed, and the choices available to you.</p>
 
         <h2>Information Lockstep handles</h2>
@@ -34,6 +34,16 @@
             <li><strong>Device idle state:</strong> if you turn on locking when your screen locks, the extension uses Chrome’s idle API to detect that your device has locked or gone idle. This state is checked locally and is not sent to Lockstep.</li>
             <li><strong>Operational information:</strong> Google Cloud, which hosts the Lockstep API and web app, may process ordinary request metadata such as time, IP address, response status, and technical error information for security, reliability, and abuse prevention.</li>
         </ul>
+
+        <h2>How Lockstep collects information</h2>
+        <p>Lockstep collects information only when you use a feature that requires it:</p>
+        <ul>
+            <li><strong>From Google after you choose to sign in:</strong> Google Sign-In provides the account identifier, email address, and display name described above after you complete Google’s authentication and consent flow.</li>
+            <li><strong>Directly from you:</strong> authenticator account details are received when you scan or import a QR code, paste an <code>otpauth://</code> URL, import a backup, or enter or edit an account manually. Passkeys and recovery keys are entered directly into the client and are processed locally as described in this policy.</li>
+            <li><strong>Through features you explicitly start:</strong> visible-tab or shared-screen content is accessed only after you start the corresponding QR scanner and choose the tab, screen, or window to process.</li>
+            <li><strong>Automatically while operating the service:</strong> Lockstep creates synchronization identifiers and timestamps, stores the local preferences and security state described above, and sends requests to the Lockstep API. The hosting provider may generate the operational request metadata described above.</li>
+        </ul>
+        <p>Lockstep does not passively monitor browsing, collect browsing history, or access page content in the background. A visible-tab image is accessed only for the user-initiated QR scanning feature and is processed locally rather than sent to Lockstep or its service providers.</p>
 
         <h2>How information is used</h2>
         <p>Information is used only to authenticate you, provide and secure the authenticator vault, synchronize encrypted records between your Lockstep clients, restore pending offline changes, respond to support or security issues, and maintain service reliability. Lockstep does not use your data for advertising, profiling, credit decisions, or unrelated purposes.</p>

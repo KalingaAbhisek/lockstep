@@ -251,9 +251,24 @@ In the item dashboard complete:
    - `identity`: open the Google OAuth sign-in flow.
    - `storage`: retain encrypted local vault data and device-local preferences.
    - `alarms`: perform scheduled background maintenance/refresh used by the extension.
+   - `idle`: detect a locked or idle device locally so Lockstep can lock the vault when the user enables screen-lock protection; the state is not transmitted.
    - production host permission: call only the Lockstep API.
 4. **Limited Use:** make the required certification and put the Chrome Web Store Limited Use statement in the public privacy policy.
 5. **Distribution:** start with Trusted testers or Unlisted for final production verification, then move to Public when ready.
+
+Use this single-purpose statement in the dashboard:
+
+> Lockstep is an authenticator that stores and generates TOTP verification codes locally, synchronizes encrypted authenticator records across the user's Lockstep clients, and lets the user add an account by explicitly scanning a QR code from the visible tab.
+
+In **Data usage**, disclose these handled data categories:
+
+- **Personally identifiable information:** Google account identifier, email address, and display name, used for sign-in and to associate the user with their synchronized vault.
+- **Authentication information:** user-provided authenticator account metadata and encrypted TOTP secrets, used only to provide the authenticator vault and encrypted synchronization.
+- **Website content:** the visible tab image accessed only after the user starts QR scanning. It is decoded locally, is not retained, and is not transmitted to Lockstep or its service providers.
+
+Certify that this data is used only for Lockstep's disclosed single purpose and related security or reliability needs; is not sold; is not used for advertising, profiling, lending, or credit decisions; and is not made available for humans to read except where the Chrome Web Store Limited Use policy permits. The dashboard disclosures, listing description, extension behavior, and public privacy policy must remain consistent.
+
+Use the public privacy-policy URL `https://kalin.ga/lockstep/privacy.html` only after it resolves over HTTPS without authentication. Enter a monitored public support address in the dashboard and publish the same address in the policy's Contact section before submission.
 
 Upload the final ZIP, submit it for review, and wait for approval. A new upload must have a higher manifest version.
 
