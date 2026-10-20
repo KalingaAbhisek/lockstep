@@ -4,6 +4,8 @@ const API_BASE_URL = String(globalThis.LOCKSTEP_CONFIG?.apiBaseUrl || location.o
 const apiUrl = (path) => `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 const APP_BASE_URL = new URL(document.baseURI);
 const EXPIRING_THRESHOLD_MILLIS = 5_000;
+const DEVICE_LOCK_CHECK_MILLIS = 30_000;
+const DEVICE_SUSPEND_GRACE_MILLIS = 10_000;
 const THEMES = ["light", "dark"];
 const LOCK_TIMEOUT_LABELS = new Map([
     [300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1200,"20 minutes"],[1500,"25 minutes"],
@@ -17,6 +19,7 @@ const state = {
     refreshing: false, editing: false, originals: new Map(), pinnedIds: new Set(), entryOrder: [], dragId: null,
     theme: localStorage.getItem("authsync.theme") || "light", confirmationResolve: null, toastTimer: null, toastHideTimer: null, confirmPasskey: "",
     lockConfig: { enabled: false, timeoutSeconds: 300, lockOnScreenLock: false }, inactivityTimer: null, lastActivityAt: Date.now(), lastPointerActivityAt: 0, screenLockController: null,
+    screenState: null, screenLockHeartbeatAt: Date.now(), screenLockHeartbeatVisible: !document.hidden,
     offline: false, pendingChanges: 0, lockSetupRequired: false, lastSyncError: null,
     restoreAuthorized: sessionStorage.getItem("authsync.restoreAuthorized") === "1", restoreReturnView: "signed-out",
     displayName: localStorage.getItem("authsync.displayName") || "",
@@ -164,11 +167,13 @@ function bindEvents() {
     setInterval(tick, 100);
     setInterval(() => { if((state.token || state.subject) && !el("signed-in").classList.contains("hidden") && !document.hidden) loadEntries(); }, 30000);
     setInterval(()=>{checkConnectivity();void checkActiveSession();}, 10000);
+    setInterval(enforceScreenLockHeartbeat,DEVICE_LOCK_CHECK_MILLIS);
     ["pointerdown","keydown","touchstart","scroll"].forEach((eventName)=>document.addEventListener(eventName,recordUserActivity,{passive:true}));
     document.addEventListener("pointermove",recordPointerActivity,{passive:true});
     document.addEventListener("visibilitychange",()=>{
+        state.screenLockHeartbeatAt=Date.now();state.screenLockHeartbeatVisible=!document.hidden;
         if(document.hidden){stopInactivityWatch();if(el("camera-dialog").open&&cameraScanner.source!=="screen")el("camera-dialog").close();}
-        else{enforceInactivityLock();if((state.token||state.subject)&&!el("signed-in").classList.contains("hidden"))loadEntries();}
+        else{enforceCurrentScreenLock();enforceInactivityLock();if((state.token||state.subject)&&!el("signed-in").classList.contains("hidden"))loadEntries();}
     });
     window.addEventListener("online", () => {
         checkConnectivity();
@@ -507,7 +512,7 @@ function ownerSubject() {
 function vaultLockedError() { const error=new Error("Vault locked. Unlock it to continue.");error.code="VAULT_LOCKED";return error; }
 function isVaultLockedError(error) { return error?.code==="VAULT_LOCKED"||error?.name==="AbortError"&&!isVaultOperational(); }
 function isVaultOperational() { return Boolean(state.subject&&LockstepVault.isUnlocked(state.subject)&&el("locked").classList.contains("hidden")&&!el("signed-in").classList.contains("hidden")); }
-function beginVaultOperation() { enforceInactivityLock();if(!isVaultOperational())throw vaultLockedError();return state.vaultEpoch; }
+function beginVaultOperation() { enforceCurrentScreenLock();enforceInactivityLock();if(!isVaultOperational())throw vaultLockedError();return state.vaultEpoch; }
 function assertVaultOperation(epoch) { if(epoch!==state.vaultEpoch||!isVaultOperational())throw vaultLockedError(); }
 function cancelVaultOperations(abortRequests = true) { state.vaultEpoch++;if(abortRequests){state.vaultRequests.abort();state.vaultRequests=new AbortController();}state.refreshing=false; }
 function closeVaultSurfaces() {
@@ -1282,18 +1287,26 @@ async function resumeUnlockedSession(){
 function clearUnlockedSession(){
     if(state.token||state.subject){sessionStorage.removeItem(lockTimestampKey());sessionStorage.removeItem(sessionKeyStorageKey());}
 }
-function stopScreenLockWatch(){if(state.screenLockController){state.screenLockController.abort();state.screenLockController=null;}}
+function stopScreenLockWatch(){if(state.screenLockController){state.screenLockController.abort();state.screenLockController=null;}state.screenState=null;}
 async function syncScreenLockWatch(){
     stopScreenLockWatch();
     if(!state.lockConfig.enabled||!state.lockConfig.lockOnScreenLock||!state.subject||!("IdleDetector" in window))return;
     const controller=new AbortController();state.screenLockController=controller;
     try{
         const detector=new IdleDetector();
-        const lockForScreen=()=>{if(detector.screenState==="locked"&&state.lockConfig.lockOnScreenLock&&LockstepVault.isUnlocked(state.subject))lockApp();};
+        const lockForScreen=()=>{state.screenState=detector.screenState;if(detector.screenState==="locked"&&state.lockConfig.lockOnScreenLock&&LockstepVault.isUnlocked(state.subject))lockApp();};
         detector.addEventListener("change",lockForScreen);
         await detector.start({threshold:60000,signal:controller.signal});
         lockForScreen();
     }catch(error){if(error.name!=="AbortError")state.screenLockController=null;}
+}
+function enforceCurrentScreenLock(){if(state.lockConfig.enabled&&state.lockConfig.lockOnScreenLock&&state.screenState==="locked"&&state.subject&&LockstepVault.isUnlocked(state.subject))lockApp();}
+function enforceScreenLockHeartbeat(){
+    const now=Date.now();
+    const delayed=state.screenLockHeartbeatVisible&&!document.hidden&&now-state.screenLockHeartbeatAt>DEVICE_LOCK_CHECK_MILLIS+DEVICE_SUSPEND_GRACE_MILLIS;
+    state.screenLockHeartbeatAt=now;state.screenLockHeartbeatVisible=!document.hidden;
+    enforceCurrentScreenLock();
+    if(delayed&&state.lockConfig.enabled&&state.lockConfig.lockOnScreenLock&&state.subject&&LockstepVault.isUnlocked(state.subject))lockApp();
 }
 function updateLockSummary(){const duration=LOCK_TIMEOUT_LABELS.get(state.lockConfig.timeoutSeconds)||"inactivity";el("lock-summary").textContent=state.lockConfig.enabled?`Locks after ${duration}${state.lockConfig.lockOnScreenLock?" or when the screen locks":""}`:"Protect codes with a passkey";void syncScreenLockWatch();}
 function recordPointerActivity(){const now=Date.now();if(now-state.lastPointerActivityAt<1000)return;state.lastPointerActivityAt=now;recordUserActivity();}

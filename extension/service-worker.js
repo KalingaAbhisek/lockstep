@@ -5,6 +5,9 @@ let tokenRefreshPromise = null;
 let activeScannerTabId = null;
 const PENDING_SYNC_ALARM = "lockstep-pending-sync";
 const CONNECTIVITY_ALARM = "lockstep-connectivity-check";
+const DEVICE_LOCK_ALARM = "lockstep-device-lock-check";
+const DEVICE_LOCK_CHECK_MINUTES = 0.5;
+const DEVICE_SUSPEND_GRACE_MS = 10000;
 let pendingSyncPromise = null;
 let pendingSyncTimeout = null;
 let connectivityPollPromise = null;
@@ -155,6 +158,7 @@ function coded(code, message) { const error = new Error(message); error.code = c
 
 async function withUnlocked(action) {
     const owner = await subject();
+    await enforceDeviceSuspendLock(await chrome.alarms.get(DEVICE_LOCK_ALARM));
     await enforceTimedLock(owner);
     if (!LockstepVault.isUnlocked(owner)) throw coded("VAULT_LOCKED", "Unlock the authenticator before using this feature.");
     const result=await action();
@@ -617,17 +621,39 @@ async function enforceDeviceScreenLock(deviceState = null) {
     return true;
 }
 
+async function enforceDeviceSuspendLock(alarm = null) {
+    const config=await cachedLockConfig();
+    if(!config.enabled||!config.lockOnScreenLock)return false;
+    const state=await chrome.idle.queryState(15);
+    const resumedAfterSuspend=Boolean(alarm?.scheduledTime)&&Date.now()-alarm.scheduledTime>DEVICE_SUSPEND_GRACE_MS;
+    if(state!=="locked"&&!resumedAfterSuspend)return false;
+    let owner;try{owner=await subject();}catch{return false;}
+    await clearUnlockedSession(owner);
+    return true;
+}
+
+async function ensureDeviceLockWatch() {
+    chrome.idle.setDetectionInterval(15);
+    let alarm=await chrome.alarms.get(DEVICE_LOCK_ALARM);
+    if(!alarm){
+        chrome.alarms.create(DEVICE_LOCK_ALARM,{periodInMinutes:DEVICE_LOCK_CHECK_MINUTES});
+        alarm=await chrome.alarms.get(DEVICE_LOCK_ALARM);
+    }
+    await enforceDeviceSuspendLock(alarm);
+}
+
 self.addEventListener("online", () => { schedulePendingSync(0);synchronize().catch(() => null);pollConnectivity().catch(()=>null); });
 self.addEventListener("offline", () => schedulePendingSync(10000));
 chrome.idle.onStateChanged.addListener((state)=>{if(state==="locked")enforceDeviceScreenLock(state).catch(()=>null);});
-chrome.runtime.onStartup.addListener(() => { schedulePendingSync(0);synchronize().catch(() => null);pollConnectivity().catch(()=>null);enforceDeviceScreenLock().catch(()=>null); });
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create("lockstep-sync", { periodInMinutes: 0.5 });schedulePendingSync(0);scheduleConnectivityCheck(); });
+chrome.runtime.onStartup.addListener(() => { schedulePendingSync(0);synchronize().catch(() => null);pollConnectivity().catch(()=>null);ensureDeviceLockWatch().catch(()=>null); });
+chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create("lockstep-sync", { periodInMinutes: 0.5 });schedulePendingSync(0);scheduleConnectivityCheck();ensureDeviceLockWatch().catch(()=>null); });
 chrome.alarms.onAlarm.addListener((alarm) => {
     if(alarm.name === "lockstep-lock")subject().then(enforceTimedLock).catch(()=>null);
     if(alarm.name === PENDING_SYNC_ALARM)retryPendingSync().catch(()=>null);
     if (alarm.name === "lockstep-sync") { synchronize().catch(() => null);enforceDeviceScreenLock().catch(()=>null); }
     if (alarm.name === CONNECTIVITY_ALARM) pollConnectivity().catch(()=>null);
+    if (alarm.name === DEVICE_LOCK_ALARM) enforceDeviceSuspendLock(alarm).catch(()=>null);
 });
 chrome.alarms.create("lockstep-sync", { periodInMinutes: 0.5 });
 scheduleConnectivityCheck();
-enforceDeviceScreenLock().catch(()=>null);
+ensureDeviceLockWatch().catch(()=>null);

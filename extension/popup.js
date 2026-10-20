@@ -262,6 +262,8 @@ bind("entries", "dragend", clearDragState);
 
 async function showSignedIn(loadVault = true) {
     $("restore").classList.add("hidden");
+    $("settings").classList.remove("hidden");
+    $("settings-back").classList.add("hidden");
     setAuthenticated(true);
     $("signed-out").classList.add("hidden");
     $("locked").classList.add("hidden");
@@ -376,7 +378,7 @@ function setAuthenticated(authenticated) {
 
 async function openSettings() {
     const button = $("settings");
-    if (button.classList.contains("spinning") || navigating) return;
+    if (!$("restore").classList.contains("hidden") || button.classList.contains("spinning") || navigating) return;
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!reducedMotion) button.classList.add("spinning");
     try {
@@ -845,9 +847,10 @@ function detectQrImage(image) {
 
 function showRestore(message, returnView) {
     restoreReturnView = returnView || (!$("locked").classList.contains("hidden") ? "locked" : "signed-out");
+    animateTitle("Lockstep");
     $("settings-view").classList.add("hidden");
     $("auth-view").classList.remove("hidden");
-    $("settings").classList.remove("hidden");
+    $("settings").classList.add("hidden");
     $("settings-back").classList.add("hidden");
     setAuthenticated(true);
     ["initializing", "signed-out", "signed-in", "locked", "normal-tools", "edit-tools", "lock-now"].forEach((id) => $(id).classList.add("hidden"));
