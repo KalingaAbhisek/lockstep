@@ -61,7 +61,7 @@ public class ClientSessionValidationFilter extends OncePerRequestFilter {
                             .claim("name",session.displayName())
                             .build();
                     SecurityContext context=SecurityContextHolder.createEmptyContext();
-                    context.setAuthentication(new JwtAuthenticationToken(jwt));
+                    context.setAuthentication(new JwtAuthenticationToken(jwt,List.of()));
                     SecurityContextHolder.setContext(context);
                 }
                 chain.doFilter(request,response);

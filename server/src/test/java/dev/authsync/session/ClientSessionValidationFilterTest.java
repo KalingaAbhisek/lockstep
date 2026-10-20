@@ -5,6 +5,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authorization.AuthenticatedAuthorizationManager;
+import org.springframework.security.web.FilterChainProxy;
+import org.springframework.security.web.DefaultSecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
+import org.springframework.security.web.context.NullSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
+import org.springframework.security.web.util.matcher.AnyRequestMatcher;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 
@@ -37,7 +45,14 @@ class ClientSessionValidationFilterTest {
         MockHttpServletResponse response=new MockHttpServletResponse();
         AtomicReference<String> authenticatedSubject=new AtomicReference<>();
 
-        filter.doFilter(request,response,(ignoredRequest,ignoredResponse)->authenticatedSubject.set(
+        FilterChainProxy securityChain=new FilterChainProxy(new DefaultSecurityFilterChain(
+                AnyRequestMatcher.INSTANCE,
+                new SecurityContextHolderFilter(new NullSecurityContextRepository()),
+                filter,
+                new AnonymousAuthenticationFilter("test-key"),
+                new AuthorizationFilter(AuthenticatedAuthorizationManager.authenticated())));
+
+        securityChain.doFilter(request,response,(ignoredRequest,ignoredResponse)->authenticatedSubject.set(
                 ((Jwt)SecurityContextHolder.getContext().getAuthentication().getPrincipal()).getSubject()));
 
         assertThat(response.getStatus()).isEqualTo(200);
