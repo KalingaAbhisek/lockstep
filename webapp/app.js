@@ -2,6 +2,7 @@ const el = (id) => document.getElementById(id);
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 const API_BASE_URL = String(globalThis.LOCKSTEP_CONFIG?.apiBaseUrl || location.origin).trim().replace(/\/+$/, "");
 const apiUrl = (path) => `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+const APP_BASE_URL = new URL(document.baseURI);
 const EXPIRING_THRESHOLD_MILLIS = 5_000;
 const THEMES = ["light", "dark"];
 const LOCK_TIMEOUT_LABELS = new Map([
@@ -63,7 +64,7 @@ async function initialize() {
         if (state.displayName) localStorage.setItem("authsync.displayName", state.displayName);
         scheduleGoogleSessionExpiry();
     }
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register(new URL("sw.js", APP_BASE_URL));
     bindEvents();
     if (!isSecureGoogleOrigin()) {
         hideLoader();

@@ -14,7 +14,7 @@ globalThis.LOCKSTEP_CONFIG = Object.freeze({
 
 For a production static host, replace that value with the HTTPS origin of the separately deployed API. Add the frontend's exact origin to the API's `ALLOWED_ORIGINS` value and to the Google OAuth client's Authorized JavaScript origins.
 
-The current PWA uses root-relative asset and service-worker URLs, so host it at the origin root. If a reverse proxy publishes it under a path such as `/lockstep`, that proxy must also map the app's root-relative assets and service worker correctly; a dedicated hostname is simpler and less error-prone.
+The PWA supports both origin-root hosting and the `/lockstep/` base path. Its assets, manifest, privacy page, and service worker resolve within the current base path. The included Nginx configuration redirects `/lockstep` to `/lockstep/` and serves the application there. Configure an upstream reverse proxy to route `https://kalin.ga/lockstep` and its descendants to this frontend service.
 
 ## Local static hosting
 

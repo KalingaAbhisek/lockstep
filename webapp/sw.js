@@ -1,5 +1,7 @@
 const CACHE = "lockstep-shell-v68";
-const SHELL = ["/", "/index.html", "/privacy.html", "/config.js", "/styles.css", "/crypto-store.js", "/app.js", "/vendor/jsQR.js", "/vendor/qrcode.js", "/manifest.webmanifest"];
+const BASE_PATH = new URL(self.registration.scope).pathname.replace(/\/$/, "");
+const scopedPath = (path = "") => `${BASE_PATH}/${path}`.replace(/\/$/, "/");
+const SHELL = ["", "index.html", "privacy.html", "config.js", "styles.css", "crypto-store.js", "app.js", "vendor/jsQR.js", "vendor/qrcode.js", "manifest.webmanifest"].map(scopedPath);
 
 self.addEventListener("install", (event) => event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())
@@ -15,7 +17,7 @@ self.addEventListener("fetch", (event) => {
     const url = new URL(event.request.url);
     if (!url.protocol.startsWith("http")) return;
     if (event.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
-    const isShell = SHELL.includes(url.pathname) || url.pathname === "/";
+    const isShell = SHELL.includes(url.pathname) || url.pathname === `${BASE_PATH}/`;
     if (isShell) {
         event.respondWith(
             fetch(event.request).then((response) => {

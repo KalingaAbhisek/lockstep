@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#f7f8fb">
-    <title>Lockstep</title><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/styles.css">
-    <script src="/config.js"></script><script src="https://accounts.google.com/gsi/client" async defer></script><script src="/vendor/jsQR.js" defer></script><script src="/vendor/qrcode.js" defer></script><script src="/crypto-store.js" defer></script><script src="/app.js" defer></script>
+    <script>if(location.pathname==="/lockstep")location.replace(`/lockstep/${location.search}${location.hash}`);</script>
+    <title>Lockstep</title><link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="styles.css">
+    <script src="config.js"></script><script src="https://accounts.google.com/gsi/client" async defer></script><script src="vendor/jsQR.js" defer></script><script src="vendor/qrcode.js" defer></script><script src="crypto-store.js" defer></script><script src="app.js" defer></script>
 </head>
 <body>
 <svg class="icon-sprite" aria-hidden="true">
@@ -29,7 +30,7 @@
 <div class="app-shell">
     <header class="app-bar">
         <div class="brand"><span class="brand-mark"><svg><use href="#i-shield"></use></svg></span><div><strong>Lockstep</strong><small id="connectivity-status" class="connectivity-status" role="status" aria-live="polite" aria-atomic="true"><span class="connectivity-dot" aria-hidden="true"></span><span class="connectivity-label">Checking…</span></small></div></div>
-        <div id="app-actions" class="app-actions" style="visibility:hidden"><a class="privacy-nav" href="/privacy.html?return=close" target="_blank" rel="noopener" aria-label="Open privacy policy in a new tab" title="Privacy policy"><svg><use href="#i-shield"></use></svg><span>Privacy</span></a><div id="google-sign-in" class="nav-sign-in"></div><button id="theme-toggle" class="icon-button" type="button" aria-label="Switch light or dark theme" title="Switch theme"><svg><use href="#i-theme"></use></svg></button><button id="lock-now" class="icon-button hidden" type="button" aria-label="Lock authenticator" title="Lock"><svg><use href="#i-lock"></use></svg></button><button id="open-settings" class="icon-button hidden" type="button" aria-label="Settings" title="Settings"><svg><use href="#i-settings"></use></svg></button><button id="sign-out" class="icon-button hidden" type="button" aria-label="Sign out" title="Sign out"><svg><use href="#i-logout"></use></svg></button></div>
+        <div id="app-actions" class="app-actions" style="visibility:hidden"><a class="privacy-nav" href="privacy.html?return=close" target="_blank" rel="noopener" aria-label="Open privacy policy in a new tab" title="Privacy policy"><svg><use href="#i-shield"></use></svg><span>Privacy</span></a><div id="google-sign-in" class="nav-sign-in"></div><button id="theme-toggle" class="icon-button" type="button" aria-label="Switch light or dark theme" title="Switch theme"><svg><use href="#i-theme"></use></svg></button><button id="lock-now" class="icon-button hidden" type="button" aria-label="Lock authenticator" title="Lock"><svg><use href="#i-lock"></use></svg></button><button id="open-settings" class="icon-button hidden" type="button" aria-label="Settings" title="Settings"><svg><use href="#i-settings"></use></svg></button><button id="sign-out" class="icon-button hidden" type="button" aria-label="Sign out" title="Sign out"><svg><use href="#i-logout"></use></svg></button></div>
     </header>
     <main>
         <section id="app-loading" class="app-loading">
