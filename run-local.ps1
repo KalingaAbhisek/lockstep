@@ -12,7 +12,8 @@ if (-not (Test-Path -LiteralPath $envFile)) {
         "GOOGLE_EXTENSION_CLIENT_ID=",
         "ALLOWED_ORIGINS=http://localhost:5173",
         "FIREBASE_PROJECT_ID=",
-        "GOOGLE_APPLICATION_CREDENTIALS="
+        "GOOGLE_APPLICATION_CREDENTIALS=",
+        "LOCKSTEP_API_BASE_URL=http://localhost:8080"
     )
     [IO.File]::WriteAllLines($envFile, $initialValues)
     Write-Host "Created .env. Add the Google and Firebase settings before starting Lockstep." -ForegroundColor Yellow

@@ -48,6 +48,8 @@ node --check extension/service-worker.js
 
 Do not deploy `.env`, anything under `secrets/`, a Firebase JSON key, recovery keys, exported OTP backups, or development logs.
 
+The commands in this guide perform manual deployments. Connecting a GitHub repository through Cloud Run can create Cloud Build triggers that deploy every push. To retain manual releases, open **Cloud Build → Triggers**, check both the configured region and `global`, and disable the API and frontend repository triggers. Disabling a trigger does not stop or delete the running Cloud Run service.
+
 ## 2. Create Firestore and the Cloud Run identity
 
 In Firebase Console, open **Build → Firestore Database**, create a **Native mode** database, and select the intended production location. Do not choose a temporary/test database for production.
@@ -162,11 +164,18 @@ The extension currently needs production-quality extension icons and store artwo
 
 ## 7. Connect the production extension
 
-Set the ID and origin locally:
+Set each development or Chrome Web Store ID and build its origin locally. For one extension:
 
 ```powershell
 $ExtensionId = "YOUR_CHROME_WEB_STORE_EXTENSION_ID"
-$ExtensionOrigin = "chrome-extension://$ExtensionId"
+$ExtensionOrigins = "chrome-extension://$ExtensionId"
+```
+
+When both unpacked and Store builds must work, include both IDs:
+
+```powershell
+$ExtensionIds = @("YOUR_DEVELOPMENT_EXTENSION_ID", "YOUR_CHROME_WEB_STORE_EXTENSION_ID")
+$ExtensionOrigins = ($ExtensionIds | ForEach-Object { "chrome-extension://$_" }) -join ","
 ```
 
 In the same Web OAuth client, add this exact **Authorized redirect URI**:
@@ -175,7 +184,7 @@ In the same Web OAuth client, add this exact **Authorized redirect URI**:
 https://YOUR_CHROME_WEB_STORE_EXTENSION_ID.chromiumapp.org/google
 ```
 
-There is no trailing slash. The path `/google` is required by the implementation.
+There is no trailing slash. The path `/google` is required by the implementation. Register one redirect URI for every extension ID that can sign in.
 
 Update `extension/config.js`:
 
@@ -196,9 +205,13 @@ Replace the development host permission in `extension/manifest.json`:
 Update Cloud Run CORS so it contains the exact PWA and extension origins:
 
 ```powershell
-$AllowedOrigins = "$WebOrigin,$ExtensionOrigin"
-gcloud run services update $ApiService --update-env-vars="ALLOWED_ORIGINS=$AllowedOrigins"
+$AllowedOrigins = "$WebOrigin,$ExtensionOrigins"
+gcloud run services update $ApiService `
+  --region $Region `
+  --update-env-vars="^@^ALLOWED_ORIGINS=$AllowedOrigins"
 ```
+
+The custom `@` delimiter is required because `ALLOWED_ORIGINS` is itself a comma-separated value. Each web entry must be an origin only, such as `https://app.example.com`; do not include a path such as `/lockstep`.
 
 Keep `GOOGLE_WEB_CLIENT_ID` and `GOOGLE_EXTENSION_CLIENT_ID` set to the Web OAuth client ID used by the two clients. Cloud Run creates a new revision when the environment changes.
 

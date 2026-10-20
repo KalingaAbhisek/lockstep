@@ -66,7 +66,7 @@ To configure the variables manually:
 ```powershell
 $env:GOOGLE_WEB_CLIENT_ID = "537289145594-uf4imsthtr2ehnh0e89tsrl0s8qgu19j.apps.googleusercontent.com"
 $env:GOOGLE_EXTENSION_CLIENT_ID = "537289145594-uf4imsthtr2ehnh0e89tsrl0s8qgu19j.apps.googleusercontent.com"
-$env:ALLOWED_ORIGINS = "http://localhost:5173,chrome-extension://lkfonjeagenlaelocnfjlkdpflfnnojo"
+$env:ALLOWED_ORIGINS = "http://localhost:5173,chrome-extension://lkfonjeagenlaelocnfjlkdpflfnnojo,chrome-extension://mpifbmaidgmjddapnlfcmihdbiamkika"
 $env:FIREBASE_PROJECT_ID = "your-project-id"
 $env:GOOGLE_APPLICATION_CREDENTIALS = "secrets/firebase-service-account.json"
 ./mvnw.cmd spring-boot:run -pl server
@@ -79,6 +79,8 @@ python -m http.server 5173 --directory webapp
 ```
 
 `webapp/config.js` points to `http://localhost:8080` by default. For a separate production deployment, set it to the API's HTTPS origin, or deploy the included frontend container with `LOCKSTEP_API_BASE_URL`.
+
+When using the frontend container locally, add `LOCKSTEP_API_BASE_URL=http://localhost:8080` to the root `.env` and pass it with `docker run --env-file .env`. Cloud Run and other hosting platforms do not automatically read the local `.env`; configure the same variable on the frontend service.
 
 Firestore creates a real document for each Google account at `users/{google-subject}` (with verified email/display metadata when supplied by Google), and stores that user's encrypted TOTP records below `users/{google-subject}/authenticatorEntries/{entry-id}`.
 
