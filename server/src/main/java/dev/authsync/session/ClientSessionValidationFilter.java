@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -59,7 +60,9 @@ public class ClientSessionValidationFilter extends OncePerRequestFilter {
                             .claim("email_verified",true)
                             .claim("name",session.displayName())
                             .build();
-                    SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+                    SecurityContext context=SecurityContextHolder.createEmptyContext();
+                    context.setAuthentication(new JwtAuthenticationToken(jwt));
+                    SecurityContextHolder.setContext(context);
                 }
                 chain.doFilter(request,response);
                 return;

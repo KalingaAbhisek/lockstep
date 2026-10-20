@@ -58,6 +58,21 @@ class ClientSessionServiceTest {
                 .isEqualTo(ClientSessionService.SessionStatus.REVOKED);
     }
 
+    @Test
+    void signingInAgainAfterExpiryCreatesAWorkingReplacementSession() {
+        Jwt web=jwt("user-1","shared-client");
+        ClientSessionService.RegisteredSession expired=service.register(web,"web");
+        repository.expire("user-1",ClientType.WEB);
+
+        ClientSessionService.RegisteredSession replacement=service.register(web,"web");
+
+        assertThat(service.validate(web,"web",expired.sessionToken()).status())
+                .isEqualTo(ClientSessionService.SessionStatus.REVOKED);
+        assertThat(service.validate(web,"web",replacement.sessionToken()).status())
+                .isEqualTo(ClientSessionService.SessionStatus.ACTIVE);
+        assertThat(replacement.expiresAtEpochMillis()).isGreaterThan(Instant.now().plusSeconds(29L*24*60*60).toEpochMilli());
+    }
+
     private static Jwt jwt(String subject, String audience) {
         Instant now = Instant.now();
         return Jwt.withTokenValue("google-token")
