@@ -30,7 +30,7 @@ Build from the repository root using the `webapp` directory as the Docker contex
 
 ```powershell
 docker build -t lockstep-webapp webapp
-docker run --rm -p 5173:80 -e LOCKSTEP_API_BASE_URL=http://localhost:8080 lockstep-webapp
+docker run --rm -p 5173:8080 -e LOCKSTEP_API_BASE_URL=http://localhost:8080 lockstep-webapp
 ```
 
 Set `LOCKSTEP_API_BASE_URL` to the production API origin when deploying the container. The startup script renders `config.js`; the frontend image does not need to be rebuilt when only the API origin changes.
