@@ -20,7 +20,7 @@ The clients parse authenticator URIs, encrypt seeds, generate verification codes
 4. Firestore stores ciphertext, a 96-bit IV, key version, TOTP parameters, display metadata, UUIDs, and timestamps.
 5. IndexedDB retains encrypted entries for offline code generation. A transactional outbox retains idempotent PUT or DELETE operations until acknowledged.
 6. Both clients refresh the device-reported internet state every 10 seconds and react immediately to browser connectivity events. Lockstep API/session health is checked separately so a server problem cannot incorrectly label the device itself Offline.
-7. Recovery keys are explicit client-side exports. Losing all provisioned devices and every recovery key makes the vault unrecoverable.
+7. Recovery keys are client-side exports. Both clients download one automatically after successful first-time profile/passkey setup and allow additional manual downloads. Losing all provisioned devices and every recovery key makes the vault unrecoverable.
 8. Rotation creates a new random 256-bit vault master key, increments the public version, re-encrypts locally, publishes the new wrapped key before replacement ciphertext, and queues idempotent entry updates. It produces a new recovery key and invalidates the previous one.
 9. Pin state and explicit ordering are device-local and never sent to the API.
 10. QR transfer and text backup deliberately reveal plaintext locally after a disclosure warning. No third-party QR service is used.

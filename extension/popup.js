@@ -145,13 +145,7 @@ bind("restore-key-file", "change", async (event) => {
 bind("settings-recovery-export", "click", async () => {
     const result = await send("EXPORT_RECOVERY_KEY");
     if (!result.ok) { if (handleSessionProblem(result)) return; settingsMessage(result.error, true); return; }
-    const text = `Lockstep recovery key\n\n${result.data}\n\nKeep this file private. Anyone with this key can restore and decrypt your authenticator vault.\n`;
-    const blobUrl = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
-    const download = document.createElement("a");
-    download.href = blobUrl;
-    download.download = `lockstep-recovery-key-${new Date().toISOString().slice(0, 10)}.txt`;
-    download.click();
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    downloadRecoveryKeyFile(result.data);
     settingsMessage("Recovery key downloaded. Store it somewhere private.");
 });
 function downloadRecoveryKeyFile(value) {
@@ -969,7 +963,7 @@ async function openLockSettings({ required = false, refresh = true } = {}) {
     $("lock-form").reset(); $("lock-timeout").value = String(lockConfig.timeoutSeconds || 300); $("lock-on-screen-lock").checked=Boolean(lockConfig.lockOnScreenLock); $("lock-error").textContent = "";
     $("lock-dialog-title").textContent = required ? "Create lock protection" : "Change lock protection";
     $("lock-dialog-description").textContent = required
-        ? "Create a passkey before adding or viewing authenticator accounts. It cannot be recovered."
+        ? "Create a passkey before adding or viewing authenticator accounts. When setup finishes, your recovery-key file downloads automatically."
         : "Choose a new passkey for this device and your synchronized vault.";
     $("lock-dialog-close").classList.toggle("hidden", required);
     $("lock-dialog").showModal();
@@ -978,6 +972,7 @@ async function openLockSettings({ required = false, refresh = true } = {}) {
 
 async function saveLockSettings(event) {
     event.preventDefault();
+    const initialSetup = lockSetupRequired;
     const passcode = $("lock-passcode").value;
     if (passcode.length < 4) { $("lock-error").textContent = "Passkey must contain at least 4 characters."; return; }
     if (passcode !== $("lock-confirm").value) { $("lock-error").textContent = "Passkeys do not match."; return; }
@@ -989,9 +984,14 @@ async function saveLockSettings(event) {
         }
         $("lock-error").textContent = result.error; return;
     }
-    lockConfig = result.data; await chrome.storage.session.set({ lastUnlockedAt: Date.now() }); updateLockSummary();
+    const recoveryKey = initialSetup ? result.data.recoveryKey : null;
+    const savedConfig = { ...result.data };
+    delete savedConfig.recoveryKey;
+    lockConfig = savedConfig; await chrome.storage.session.set({ lastUnlockedAt: Date.now() }); updateLockSummary();
     lockSetupRequired = false;
-    $("lock-dialog").close(); $("lock-now").classList.remove("hidden"); settingsMessage("Lock protection saved.");
+    $("lock-dialog").close(); $("lock-now").classList.remove("hidden");
+    if (recoveryKey) { downloadRecoveryKeyFile(recoveryKey); settingsMessage("Profile setup complete. Recovery key downloaded; store it somewhere private."); }
+    else settingsMessage("Lock protection saved.");
     await showSignedIn();
 }
 

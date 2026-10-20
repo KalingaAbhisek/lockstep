@@ -513,7 +513,8 @@ async function setLockConfig(passcode, timeoutSeconds, lockOnScreenLock, initial
     await chrome.storage.local.set({ cachedLockConfig: config });
     await chrome.storage.session.remove("newAccountSetupAuthorized");
     await persistUnlockedSession(vaultSubject, config);
-    return config;
+    if (!initialSetup) return config;
+    return { ...config, recoveryKey: await LockstepVault.exportRecoveryKey(vaultSubject) };
 }
 async function verifyLock(passcode) {
     const owner = await subject();

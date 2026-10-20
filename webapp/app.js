@@ -1400,7 +1400,7 @@ async function unlockApp(event){
         await showUnlockedApp();toast("Vault unlocked");
     }catch(error){if(error.code==="KEY_MISSING")signOut(false,"Local vault data was cleared. Sign in with Google again.");else if(error.code==="SESSION_EXPIRED")signOut(false,error.message);else showInlineError("unlock-error",error.message);}
 }
-async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=normalizeLockConfig(await api("/api/v1/lock"));state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||300);el("lock-on-screen-lock").checked=Boolean(state.lockConfig.lockOnScreenLock);el("lock-dialog-title").textContent=required?"Create lock protection":"Change lock protection";el("lock-dialog-description").textContent=required?"Create a synchronized passkey before adding or viewing authenticator accounts. It cannot be recovered.":"Choose a new passkey and when Lockstep should lock.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){if(!isVaultLockedError(error))toast(error.message,true);}}
+async function openLockSettings({required=false,refresh=true}={}){try{if(refresh)state.lockConfig=normalizeLockConfig(await api("/api/v1/lock"));state.lockSetupRequired=required;updateLockSummary();el("lock-form").reset();el("lock-timeout").value=String(state.lockConfig.timeoutSeconds||300);el("lock-on-screen-lock").checked=Boolean(state.lockConfig.lockOnScreenLock);el("lock-dialog-title").textContent=required?"Create lock protection":"Change lock protection";el("lock-dialog-description").textContent=required?"Create a synchronized passkey before adding or viewing authenticator accounts. When setup finishes, your recovery-key file downloads automatically.":"Choose a new passkey and when Lockstep should lock.";el("lock-dialog-close").classList.toggle("hidden",required);hideInlineError("lock-error");el("settings-dialog").close();el("lock-dialog").showModal();el("lock-passcode").focus();}catch(error){if(!isVaultLockedError(error))toast(error.message,true);}}
 async function saveLockSettings(event){
     event.preventDefault();hideInlineError("lock-error");
     const lockOnScreenLock=el("lock-on-screen-lock").checked;
@@ -1409,6 +1409,7 @@ async function saveLockSettings(event){
         try{if(await IdleDetector.requestPermission()!=="granted"){showInlineError("lock-error","Allow screen-lock detection to enable this option.");return;}}
         catch{showInlineError("lock-error","Screen-lock detection could not be enabled in this browser.");return;}
     }
+    const initialSetup=state.lockSetupRequired;
     let epoch=null;try{if(state.lockConfig.enabled)epoch=beginVaultOperation();}catch{return;}
     const passcode=el("lock-passcode").value;
     if(passcode.length<4){showInlineError("lock-error","Passkey must contain at least 4 characters.");return;}
@@ -1417,8 +1418,12 @@ async function saveLockSettings(event){
         await LockstepVault.configurePassphrase(ownerSubject(),passcode);if(epoch!==null)assertVaultOperation(epoch);
         const wrappedKey=await LockstepVault.exportWrappedKey(ownerSubject());if(epoch!==null)assertVaultOperation(epoch);
         state.lockConfig=normalizeLockConfig(await api("/api/v1/lock",{method:"PUT",body:JSON.stringify({passcode,timeoutSeconds:Number(el("lock-timeout").value),lockOnScreenLock,wrappedKey})}));
-        if(epoch!==null)assertVaultOperation(epoch);state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();
-        el("lock-passcode").value="";el("lock-confirm").value="";state.lockSetupRequired=false;updateLockSummary();el("lock-dialog").close();el("lock-now").classList.remove("hidden");toast("Lock protection saved");scheduleInactivityLock();await loadEntries(true);
+        if(epoch!==null)assertVaultOperation(epoch);
+        const recoveryKey=initialSetup?await LockstepVault.exportRecoveryKey(ownerSubject()):null;if(epoch!==null)assertVaultOperation(epoch);
+        state.lastActivityAt=Date.now();sessionStorage.setItem(lockTimestampKey(),String(state.lastActivityAt));persistUnlockedSession();
+        el("lock-passcode").value="";el("lock-confirm").value="";state.lockSetupRequired=false;updateLockSummary();el("lock-dialog").close();el("lock-now").classList.remove("hidden");
+        if(recoveryKey){downloadRecoveryKeyFile(recoveryKey);toast("Profile setup complete. Recovery key downloaded; store it somewhere private.");}else toast("Lock protection saved");
+        scheduleInactivityLock();await loadEntries(true);
     }catch(error){if(!isVaultLockedError(error))showInlineError("lock-error",error.message);}
 }
 
