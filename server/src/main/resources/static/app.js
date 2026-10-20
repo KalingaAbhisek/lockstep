@@ -20,7 +20,7 @@ const state = {
     vaultEpoch: 0, vaultRequests: new AbortController(), tokenExpiryTimer: null,
     pendingSyncTimer: null, pendingSyncRunning: false, pendingSyncRequested: false
 };
-const cameraScanner = { stream:null, frameRequest:0, lastScanAt:0, frameCount:0, processing:false, lastValue:"", ignoreUntil:0 };
+const cameraScanner = { stream:null, source:"camera", frameRequest:0, frameTimer:null, lastScanAt:0, frameCount:0, processing:false, lastValue:"", ignoreUntil:0, selection:null, selectionDrag:null };
 
 function animateIn(element) {
     element.classList.remove("view-enter");
@@ -130,7 +130,12 @@ function bindEvents() {
     el("open-camera").addEventListener("click", openCameraScanner);
     el("close-camera").addEventListener("click", () => el("camera-dialog").close());
     el("retry-camera").addEventListener("click", startCameraStream);
+    el("clear-screen-selection").addEventListener("click", clearScreenSelection);
     el("camera-dialog").addEventListener("close", stopCameraScanner);
+    el("camera-viewfinder").addEventListener("pointerdown",startScreenSelection);
+    el("camera-viewfinder").addEventListener("pointermove",moveScreenSelection);
+    el("camera-viewfinder").addEventListener("pointerup",finishScreenSelection);
+    el("camera-viewfinder").addEventListener("pointercancel",finishScreenSelection);
     el("open-manual").addEventListener("click", () => openSubDialog("manual-dialog"));
     el("open-uris").addEventListener("click", () => openSubDialog("uri-dialog"));
     el("manual-form").addEventListener("submit", addManualEntry);
@@ -159,7 +164,7 @@ function bindEvents() {
     ["pointerdown","keydown","touchstart","scroll"].forEach((eventName)=>document.addEventListener(eventName,recordUserActivity,{passive:true}));
     document.addEventListener("pointermove",recordPointerActivity,{passive:true});
     document.addEventListener("visibilitychange",()=>{
-        if(document.hidden){stopInactivityWatch();if(el("camera-dialog").open)el("camera-dialog").close();}
+        if(document.hidden){stopInactivityWatch();if(el("camera-dialog").open&&cameraScanner.source!=="screen")el("camera-dialog").close();}
         else{enforceInactivityLock();if((state.token||state.subject)&&!el("signed-in").classList.contains("hidden"))loadEntries();}
     });
     window.addEventListener("online", () => {
@@ -832,7 +837,7 @@ async function deleteEntry(entry) {
     } catch (error) { if(!isVaultLockedError(error))toast(error.message, true); }
 }
 
-function openAdd() { try{beginVaultOperation();}catch{return;}hideInlineError("add-error"); el("add-dialog").showModal(); }
+function openAdd() { try{beginVaultOperation();}catch{return;}hideInlineError("add-error");updateLiveScanCopy();el("add-dialog").showModal(); }
 function closeAdd() { hideInlineError("add-error"); el("add-dialog").close(); }
 function openSubDialog(id) { try{beginVaultOperation();}catch{return;}el("add-dialog").close(); el(id).showModal(); }
 
@@ -867,12 +872,32 @@ async function openCameraScanner() {
     try{beginVaultOperation();}catch{return;}
     closeAdd();
     const dialog=el("camera-dialog");
+    cameraScanner.source=isMobileScannerDevice()?"camera":"screen";
+    const screen=cameraScanner.source==="screen";
+    dialog.removeAttribute("data-display-surface");
+    dialog.classList.toggle("screen-source",screen);
+    el("scanner-kicker").textContent=screen?"SCREEN SCANNER":"LIVE SCANNER";
+    el("scanner-title").textContent=screen?"Scan QR from your screen":"Scan authenticator QR";
+    el("scanner-description").textContent=screen?"In the share picker, choose Browser tab (or Chrome tab), then select this tab or another tab containing the QR code.":"The account is added automatically when the code is detected.";
     hideInlineError("camera-error");
     el("retry-camera").classList.add("hidden");
-    el("camera-status").textContent="Point the camera at a TOTP QR code.";
+    clearScreenSelection();
+    el("camera-status").textContent=screen?"Select this tab or another tab in the browser share picker. Then drag around the QR code in this preview.":"Point the camera at a TOTP QR code.";
     el("camera-starting").classList.remove("hidden");
     dialog.showModal();
     await startCameraStream();
+}
+
+function isMobileScannerDevice() {
+    if(typeof navigator.userAgentData?.mobile==="boolean")return navigator.userAgentData.mobile;
+    return /Android|iPhone|iPad|iPod|IEMobile|Mobile/i.test(navigator.userAgent)
+        || /Macintosh/i.test(navigator.userAgent)&&navigator.maxTouchPoints>1;
+}
+
+function updateLiveScanCopy() {
+    const mobile=isMobileScannerDevice();
+    el("live-scan-label").textContent=mobile?"Scan with camera":"Scan from screen";
+    el("live-scan-description").textContent=mobile?"Point your camera at an authenticator QR":"Select this tab or another tab containing the QR";
 }
 
 async function startCameraStream() {
@@ -880,30 +905,49 @@ async function startCameraStream() {
     stopCameraScanner();
     hideInlineError("camera-error");
     el("retry-camera").classList.add("hidden");
-    el("camera-starting").textContent="Starting camera…";
+    const screen=cameraScanner.source==="screen";
+    el("camera-starting").textContent=screen?"Waiting for screen selection…":"Starting camera…";
     el("camera-starting").classList.remove("hidden");
     if (typeof window.jsQR !== "function") {
         showCameraError("The QR scanner could not be loaded. Refresh the page or import a saved QR image.");
         return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-        showCameraError("Live camera scanning is not supported in this browser. Import a saved QR image instead.");
+    const capture=screen?navigator.mediaDevices?.getDisplayMedia:navigator.mediaDevices?.getUserMedia;
+    if (!capture) {
+        showCameraError(screen?"Screen scanning is not supported in this browser. Import a saved QR image instead.":"Live camera scanning is not supported in this browser. Import a saved QR image instead.");
         return;
     }
     try {
-        cameraScanner.stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}});
+        const stream=screen
+            ? await navigator.mediaDevices.getDisplayMedia({
+                audio:false,
+                video:{displaySurface:"browser",frameRate:{ideal:10,max:15}},
+                preferCurrentTab:false,
+                selfBrowserSurface:"include",
+                surfaceSwitching:"include",
+                monitorTypeSurfaces:"include",
+                systemAudio:"exclude"
+            })
+            : await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}});
+        cameraScanner.stream=stream;
+        if(screen){
+            const track=stream.getVideoTracks()[0];
+            el("camera-dialog").dataset.displaySurface=track?.getSettings?.().displaySurface||"unknown";
+            track?.addEventListener("ended",()=>{if(cameraScanner.stream===stream&&el("camera-dialog").open)showCameraError("Screen sharing stopped. Choose a screen, window, or tab to try again.");},{once:true});
+        }
         if (!el("camera-dialog").open) { stopCameraScanner(); return; }
         const video=el("camera-video");
         video.srcObject=cameraScanner.stream;
         await video.play();
         cameraScanner.lastScanAt=0;cameraScanner.frameCount=0;cameraScanner.lastValue="";cameraScanner.ignoreUntil=0;
         el("camera-starting").classList.add("hidden");
+        if(screen)el("camera-status").textContent="Drag around the QR code you want to scan.";
         recordUserActivity();
-        cameraScanner.frameRequest=requestAnimationFrame(scanCameraFrame);
+        scheduleScannerFrame();
     } catch (error) {
         const denied=error?.name==="NotAllowedError"||error?.name==="SecurityError";
         const missing=error?.name==="NotFoundError"||error?.name==="OverconstrainedError";
-        showCameraError(denied?"Camera access was blocked. Allow camera permission and try again.":missing?"No usable camera was found on this device.":"The camera could not be started. Try again or import a saved QR image.");
+        showCameraError(screen?(denied?"Screen sharing was cancelled or blocked. Choose what to share and try again.":"Screen capture could not be started. Try again or import a saved QR image."):(denied?"Camera access was blocked. Allow camera permission and try again.":missing?"No usable camera was found on this device.":"The camera could not be started. Try again or import a saved QR image."));
     }
 }
 
@@ -917,26 +961,128 @@ function showCameraError(message) {
 function stopCameraScanner() {
     if(cameraScanner.frameRequest)cancelAnimationFrame(cameraScanner.frameRequest);
     cameraScanner.frameRequest=0;
-    cameraScanner.stream?.getTracks().forEach(track=>track.stop());
-    cameraScanner.stream=null;cameraScanner.processing=false;
+    if(cameraScanner.frameTimer!==null)clearTimeout(cameraScanner.frameTimer);
+    cameraScanner.frameTimer=null;
+    const stream=cameraScanner.stream;
+    cameraScanner.stream=null;
+    stream?.getTracks().forEach(track=>track.stop());
+    cameraScanner.processing=false;
+    cameraScanner.selection=null;cameraScanner.selectionDrag=null;
+    el("screen-selection")?.classList.add("hidden");
+    el("clear-screen-selection")?.classList.add("hidden");
     const video=el("camera-video");
     if(video){video.pause();video.srcObject=null;}
 }
 
+function screenVideoLayout() {
+    const video=el("camera-video"),viewfinder=el("camera-viewfinder"),bounds=viewfinder.getBoundingClientRect();
+    if(!video.videoWidth||!video.videoHeight||!video.clientWidth||!video.clientHeight)return null;
+    const scale=Math.min(video.clientWidth/video.videoWidth,video.clientHeight/video.videoHeight);
+    const width=video.videoWidth*scale,height=video.videoHeight*scale;
+    const left=video.offsetLeft+(video.clientWidth-width)/2,top=video.offsetTop+(video.clientHeight-height)/2;
+    return{bounds,left,top,width,height};
+}
+
+function screenPoint(event) {
+    const layout=screenVideoLayout();if(!layout)return null;
+    const x=Math.max(0,Math.min(layout.width,event.clientX-layout.bounds.left-layout.left));
+    const y=Math.max(0,Math.min(layout.height,event.clientY-layout.bounds.top-layout.top));
+    return{layout,x,y};
+}
+
+function startScreenSelection(event) {
+    if(cameraScanner.source!=="screen"||!cameraScanner.stream||cameraScanner.processing)return;
+    const point=screenPoint(event);if(!point)return;
+    event.preventDefault();el("camera-viewfinder").setPointerCapture(event.pointerId);
+    el("camera-status").classList.remove("is-error");hideInlineError("camera-error");
+    cameraScanner.selectionDrag={pointerId:event.pointerId,startX:point.x,startY:point.y,layout:point.layout};
+    renderScreenSelection(point.x,point.y,point.x,point.y,point.layout);
+}
+
+function moveScreenSelection(event) {
+    const drag=cameraScanner.selectionDrag;if(!drag||drag.pointerId!==event.pointerId)return;
+    const point=screenPoint(event);if(!point)return;
+    renderScreenSelection(drag.startX,drag.startY,point.x,point.y,point.layout);
+}
+
+function finishScreenSelection(event) {
+    const drag=cameraScanner.selectionDrag;if(!drag||drag.pointerId!==event.pointerId)return;
+    const point=screenPoint(event);cameraScanner.selectionDrag=null;
+    if(!point){clearScreenSelection();return;}
+    const x=Math.min(drag.startX,point.x),y=Math.min(drag.startY,point.y),width=Math.abs(point.x-drag.startX),height=Math.abs(point.y-drag.startY);
+    if(width<24||height<24){clearScreenSelection();return;}
+    cameraScanner.selection={x:x/point.layout.width,y:y/point.layout.height,width:width/point.layout.width,height:height/point.layout.height};
+    renderScreenSelection(x,y,x+width,y+height,point.layout);
+    el("clear-screen-selection").classList.remove("hidden");
+    el("camera-status").textContent="Scanning the selected area for a TOTP QR code…";
+    el("camera-status").classList.remove("is-error");
+    cameraScanner.ignoreUntil=0;
+    validateScreenSelection();
+}
+
+function renderScreenSelection(startX,startY,endX,endY,layout) {
+    const selection=el("screen-selection"),x=Math.min(startX,endX),y=Math.min(startY,endY);
+    selection.style.left=`${layout.left+x}px`;selection.style.top=`${layout.top+y}px`;
+    selection.style.width=`${Math.abs(endX-startX)}px`;selection.style.height=`${Math.abs(endY-startY)}px`;
+    selection.classList.remove("hidden");
+}
+
+function clearScreenSelection() {
+    cameraScanner.selection=null;cameraScanner.selectionDrag=null;
+    el("screen-selection")?.classList.add("hidden");
+    el("clear-screen-selection")?.classList.add("hidden");
+    el("camera-status")?.classList.remove("is-error");
+    if(cameraScanner.source==="screen"&&cameraScanner.stream)el("camera-status").textContent="Drag around the QR code you want to scan.";
+}
+
+function decodeCameraFrame(selected,inversionAttempts) {
+    const video=el("camera-video");
+    if(!cameraScanner.stream||video.readyState<2||!video.videoWidth||!video.videoHeight)return null;
+    const sourceX=selected?Math.round(selected.x*video.videoWidth):0,sourceY=selected?Math.round(selected.y*video.videoHeight):0;
+    const sourceWidth=selected?Math.max(1,Math.round(selected.width*video.videoWidth)):video.videoWidth;
+    const sourceHeight=selected?Math.max(1,Math.round(selected.height*video.videoHeight)):video.videoHeight;
+    const canvas=el("camera-canvas"),maxDimension=cameraScanner.source==="screen"?1440:720,scale=Math.min(1,maxDimension/Math.max(sourceWidth,sourceHeight));
+    const width=Math.max(1,Math.round(sourceWidth*scale)),height=Math.max(1,Math.round(sourceHeight*scale));
+    if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
+    const context=canvas.getContext("2d",{willReadFrequently:true});
+    context.drawImage(video,sourceX,sourceY,sourceWidth,sourceHeight,0,0,canvas.width,canvas.height);
+    const pixels=context.getImageData(0,0,canvas.width,canvas.height);
+    return window.jsQR?.(pixels.data,pixels.width,pixels.height,{inversionAttempts});
+}
+
+function validateScreenSelection() {
+    if(!cameraScanner.selection||!cameraScanner.stream||cameraScanner.processing)return;
+    cameraScanner.processing=true;
+    try {
+        const decoded=decodeCameraFrame(cameraScanner.selection,"attemptBoth");
+        cameraScanner.processing=false;
+        if(decoded?.data){handleCameraResult(decoded.data);return;}
+        el("camera-status").textContent="Invalid QR code scanned. Select a valid TOTP QR code and try again.";
+        el("camera-status").classList.add("is-error");
+        cameraScanner.ignoreUntil=Date.now()+600;
+    } catch {
+        cameraScanner.processing=false;
+        el("camera-status").textContent="Invalid QR code scanned. Select a valid TOTP QR code and try again.";
+        el("camera-status").classList.add("is-error");
+        cameraScanner.ignoreUntil=Date.now()+600;
+    }
+}
+
+function scheduleScannerFrame() {
+    if(cameraScanner.source==="screen")cameraScanner.frameTimer=setTimeout(()=>scanCameraFrame(performance.now()),240);
+    else cameraScanner.frameRequest=requestAnimationFrame(scanCameraFrame);
+}
+
 function scanCameraFrame(timestamp) {
-    cameraScanner.frameRequest=requestAnimationFrame(scanCameraFrame);
+    scheduleScannerFrame();
     if(cameraScanner.processing||timestamp-cameraScanner.lastScanAt<240||Date.now()<cameraScanner.ignoreUntil)return;
+    if(cameraScanner.source==="screen"&&!cameraScanner.selection)return;
     const video=el("camera-video");
     if(!cameraScanner.stream||video.readyState<2||!video.videoWidth||!video.videoHeight)return;
     cameraScanner.lastScanAt=timestamp;cameraScanner.frameCount++;
     try {
-        const canvas=el("camera-canvas"),maxDimension=720,scale=Math.min(1,maxDimension/Math.max(video.videoWidth,video.videoHeight));
-        const width=Math.max(1,Math.round(video.videoWidth*scale)),height=Math.max(1,Math.round(video.videoHeight*scale));
-        if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
-        const context=canvas.getContext("2d",{willReadFrequently:true});
-        context.drawImage(video,0,0,canvas.width,canvas.height);
-        const pixels=context.getImageData(0,0,canvas.width,canvas.height);
-        const decoded=window.jsQR?.(pixels.data,pixels.width,pixels.height,{inversionAttempts:cameraScanner.frameCount%5===0?"attemptBoth":"dontInvert"});
+        const selected=cameraScanner.source==="screen"?cameraScanner.selection:null;
+        const decoded=decodeCameraFrame(selected,cameraScanner.frameCount%5===0?"attemptBoth":"dontInvert");
         if(decoded?.data)handleCameraResult(decoded.data);
     } catch {
         cameraScanner.ignoreUntil=Date.now()+500;
@@ -947,11 +1093,13 @@ async function handleCameraResult(value) {
     if(value===cameraScanner.lastValue&&Date.now()<cameraScanner.ignoreUntil)return;
     cameraScanner.lastValue=value;
     if(!value.startsWith("otpauth://totp/")){
-        el("camera-status").textContent="That QR code is not a TOTP authenticator code.";
+        el("camera-status").textContent="Invalid QR code scanned. Select a valid TOTP authenticator QR code.";
+        el("camera-status").classList.add("is-error");
         cameraScanner.ignoreUntil=Date.now()+1400;
         return;
     }
     cameraScanner.processing=true;cameraScanner.ignoreUntil=Number.POSITIVE_INFINITY;
+    el("camera-status").classList.remove("is-error");
     el("camera-status").textContent="QR code found. Adding account…";
     recordUserActivity();
     try {
@@ -963,7 +1111,7 @@ async function handleCameraResult(value) {
     } catch(error) {
         if(isVaultLockedError(error))return;
         showInlineError("camera-error",error.message);
-        el("camera-status").textContent="Point the camera at a TOTP QR code.";
+        el("camera-status").textContent=cameraScanner.source==="screen"?(cameraScanner.selection?"Adjust the selection or keep the TOTP QR code visible.":"Drag around the QR code to focus scanning."):"Point the camera at a TOTP QR code.";
         cameraScanner.processing=false;cameraScanner.ignoreUntil=Date.now()+1800;
     }
 }
