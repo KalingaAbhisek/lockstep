@@ -6,6 +6,7 @@ const APP_BASE_URL = new URL(document.baseURI);
 const EXPIRING_THRESHOLD_MILLIS = 5_000;
 const DEVICE_LOCK_CHECK_MILLIS = 30_000;
 const DEVICE_SUSPEND_GRACE_MILLIS = 10_000;
+const SESSION_REVOKED_NOTICE_KEY = "authsync.sessionRevokedNotice";
 const THEMES = ["light", "dark"];
 const LOCK_TIMEOUT_LABELS = new Map([
     [300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1200,"20 minutes"],[1500,"25 minutes"],
@@ -89,11 +90,12 @@ async function initialize() {
     if (state.token || state.subject) await showApp(false);
     else {
         signOut(false);
-        if (!config?.googleClientId) toast("Connect once to configure Google Sign-In.", true);
+        if (!config?.googleClientId) toast("Backend is currently unavailable. Please try again when the service is back online.", true);
     }
     schedulePendingSync(0);
     checkConnectivity();
     void checkActiveSession();
+    showStoredSessionRevokedNotice();
     hideLoader();
 }
 
@@ -204,6 +206,19 @@ function checkConnectivity() {
     return online;
 }
 
+function showSessionRevoked(message="This Lockstep session was replaced by a login on another device.") {
+    localStorage.setItem(SESSION_REVOKED_NOTICE_KEY,message);
+    signOut(false,message);
+    localStorage.removeItem(SESSION_REVOKED_NOTICE_KEY);
+}
+
+function showStoredSessionRevokedNotice() {
+    const message=localStorage.getItem(SESSION_REVOKED_NOTICE_KEY);
+    if(!message)return;
+    localStorage.removeItem(SESSION_REVOKED_NOTICE_KEY);
+    if(!state.token&&!state.subject)toast(message,true);
+}
+
 async function checkActiveSession() {
     if(!navigator.onLine||!state.token)return;
     const controller=new AbortController();
@@ -212,7 +227,7 @@ async function checkActiveSession() {
         await ensureAppSession();
         await authenticatedFetch("/api/v1/session",{signal:controller.signal});
     }catch(error){
-        if(error.code==="SESSION_REVOKED")signOut(false,error.message);
+        if(error.code==="SESSION_REVOKED"&&(state.token||state.subject))showSessionRevoked(error.message);
     }finally{clearTimeout(timeout);}
 }
 
@@ -228,6 +243,7 @@ function waitForGoogle() {
 
 async function onGoogleCredential({ credential }) {
     showLoader();
+    localStorage.removeItem(SESSION_REVOKED_NOTICE_KEY);
     const claims = tokenClaims(credential);
     state.token = credential;
     state.subject = claims?.sub;
@@ -469,7 +485,7 @@ async function authenticatedFetch(path, options = {}) {
         const body = await response.json().catch(() => ({}));
         const error = new Error(body.error || (response.status === 401 ? "Session expired. Sign in with Google again." : `Request failed (${response.status})`));
         error.code = body.code || (response.status === 401 ? "SESSION_EXPIRED" : "REQUEST_FAILED");
-        if(error.code==="SESSION_REVOKED")signOut(false,error.message);
+        if(error.code==="SESSION_REVOKED")showSessionRevoked(error.message);
         throw error;
     }
     return response;
@@ -1333,7 +1349,7 @@ async function unlockApp(event){
         if(!serverConfig){
             try{serverConfig=JSON.parse(localStorage.getItem(`authsync.lock.${owner}`));}catch{/* handled below */}
         }
-        if(!serverConfig)throw new Error("Connect once before unlocking this vault offline.");
+        if(!serverConfig)throw new Error("Backend is currently unavailable. This vault must be unlocked online once before offline access is available.");
         await LockstepVault.unlock(owner,passcode);
         state.lockConfig=normalizeLockConfig({...serverConfig,enabled:true});
         if(serverConfig.wrappedKey){

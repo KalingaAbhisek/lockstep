@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const icon = (name, className = "") => `<svg class="${className}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
 const EXPIRING_THRESHOLD_MILLIS = 5_000;
+const SESSION_REVOKED_NOTICE_KEY = "sessionRevokedNotice";
 let entries = [];
 let originalEntries = new Map();
 let serverOffsetMillis = 0;
@@ -736,6 +737,7 @@ async function send(type, extra = {}) {
         if (response && typeof response.ok === "boolean") {
             if(!response.ok&&response.code==="VAULT_LOCKED")showLocked();
             if(!response.ok&&response.code==="SESSION_REVOKED"){
+                await chrome.storage.local.remove(SESSION_REVOKED_NOTICE_KEY);
                 isAuthenticated=false;
                 showSignedOut();
                 status(response.error||"This extension session was replaced by a login on another device.",true);
@@ -1059,10 +1061,19 @@ function formatCode(code) { return code.length === 6 ? `${code.slice(0, 3)} ${co
 function escapeHtml(value) { const node = document.createElement("span"); node.textContent = value; return node.innerHTML; }
 function escapeAttribute(value) { return String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("'", "&#39;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 
-Promise.all([
-    loadTheme().catch(() => applyTheme("system")),
-    loadLocalPins().catch(() => { pinnedEntryIds = new Set(); })
-]).finally(loadLockAndRoute);
+async function initializePopup(){
+    await Promise.all([
+        loadTheme().catch(() => applyTheme("system")),
+        loadLocalPins().catch(() => { pinnedEntryIds = new Set(); })
+    ]);
+    await loadLockAndRoute();
+    const stored=await chrome.storage.local.get(SESSION_REVOKED_NOTICE_KEY);
+    if(stored[SESSION_REVOKED_NOTICE_KEY]){
+        await chrome.storage.local.remove(SESSION_REVOKED_NOTICE_KEY);
+        if(!isAuthenticated)status(stored[SESSION_REVOKED_NOTICE_KEY],true);
+    }
+}
+void initializePopup();
 renderConnectivityStatus(navigator.onLine);
 checkConnectivity();
 setInterval(tick, 100);

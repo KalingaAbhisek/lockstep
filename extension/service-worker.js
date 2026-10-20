@@ -8,6 +8,7 @@ const CONNECTIVITY_ALARM = "lockstep-connectivity-check";
 const DEVICE_LOCK_ALARM = "lockstep-device-lock-check";
 const DEVICE_LOCK_CHECK_MINUTES = 0.5;
 const DEVICE_SUSPEND_GRACE_MS = 10000;
+const SESSION_REVOKED_NOTICE_KEY = "sessionRevokedNotice";
 let pendingSyncPromise = null;
 let pendingSyncTimeout = null;
 let connectivityPollPromise = null;
@@ -92,6 +93,7 @@ async function openPrivacyPolicy() {
 
 async function login() {
     const claims = await authorize(true);
+    await chrome.storage.local.remove(SESSION_REVOKED_NOTICE_KEY);
     await registerAppSession();
     const exists = await backendAccountExists();
     if (!exists) {
@@ -139,11 +141,12 @@ async function logout() {
     await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId"]);
 }
 
-async function invalidateAuthentication() {
+async function invalidateAuthentication(message = "") {
     try { LockstepVault.lock(await subject()); } catch {}
     await stopPendingSync();
     await chrome.storage.session.clear();
     await chrome.storage.local.remove(["vaultSubject", "vaultDisplayName", "cachedLockConfig", "appSessionId"]);
+    if(message)await chrome.storage.local.set({[SESSION_REVOKED_NOTICE_KEY]:message});
 }
 
 async function subject() {
@@ -564,14 +567,17 @@ async function removeLock() {
 }
 
 async function api(path, options = {}) {
-    const response = await fetch(AUTHSYNC_CONFIG.apiBaseUrl + path, {
-        ...options, cache: "no-store",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${await token()}`, "X-Lockstep-Client":"extension", "X-Lockstep-Session": await appSession(), ...options.headers }
-    });
+    const headers={ "Content-Type":"application/json", Authorization:`Bearer ${await token()}`, "X-Lockstep-Client":"extension", "X-Lockstep-Session":await appSession(), ...options.headers };
+    let response;
+    try{
+        response=await fetch(AUTHSYNC_CONFIG.apiBaseUrl+path,{...options,cache:"no-store",headers});
+    }catch{
+        throw coded("BACKEND_UNAVAILABLE","Backend is currently unavailable. Please try again when the service is back online.");
+    }
     if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         const error=coded(body.code||(response.status===401?"SESSION_EXPIRED":"REQUEST_FAILED"),body.error||(response.status===401?"Sign in again.":`Request failed (${response.status})`));
-        if(error.code==="SESSION_REVOKED")await invalidateAuthentication();
+        if(error.code==="SESSION_REVOKED")await invalidateAuthentication(error.message);
         throw error;
     }
     return response.status === 204 ? null : response.json();
