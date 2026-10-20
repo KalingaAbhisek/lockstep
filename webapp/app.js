@@ -332,6 +332,7 @@ async function showApp(afterLogin = false) {
 }
 
 async function showUnlockedApp(loadVault = true) {
+    if(loadVault&&state.lockConfig.enabled&&state.subject&&!LockstepVault.isUnlocked(state.subject)){showLocked();return;}
     el("signed-out").classList.add("hidden");
     el("locked").classList.add("hidden");
     el("restore").classList.add("hidden");
@@ -621,8 +622,11 @@ function renderEntrySkeleton(count = 4) {
 }
 
 async function loadEntries(force = false) {
-    if (state.refreshing || state.editing && !force || !isVaultOperational()) return;
-    const epoch=beginVaultOperation();
+    if (state.refreshing || state.editing && !force) return;
+    if(!isVaultOperational()){if(state.subject&&state.lockConfig.enabled&&!LockstepVault.isUnlocked(state.subject))showLocked();return;}
+    let epoch;
+    try{epoch=beginVaultOperation();}
+    catch(error){if(isVaultLockedError(error)){showLocked();return;}throw error;}
     state.refreshing = true;
     const hasSkeleton = el("entries").querySelector(".entry-skel") !== null;
     const isEmpty = el("entries").innerHTML.trim() === "";
@@ -647,7 +651,8 @@ async function loadEntries(force = false) {
         renderEntries();
         if (state.offline) el("account-summary").textContent += ` · Sync failed: ${state.lastSyncError || "Offline"}${state.pendingChanges ? ` · ${state.pendingChanges} change${state.pendingChanges === 1 ? "" : "s"} pending` : ""}`;
     } catch (error) {
-        if(!isVaultLockedError(error))toast(error.message, true);
+        if(isVaultLockedError(error)){showLocked();return;}
+        toast(error.message, true);
         if (hasSkeleton || isEmpty) el("entries").innerHTML = "";
     } finally {
         state.refreshing = false;

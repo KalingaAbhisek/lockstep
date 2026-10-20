@@ -280,6 +280,10 @@ async function showSignedIn(loadVault = true) {
         return;
     }
 
+    const resumed=await send("RESUME_VAULT");
+    if(!resumed.ok){if(handleSessionProblem(resumed))return;status(resumed.error,true);return;}
+    if(!resumed.data){showLocked();return;}
+
     // Try cache first — render instantly, then refresh in background
     const cached = await send("GET_CACHED_ENTRIES");
     if (!cached.ok && handleSessionProblem(cached)) return;
@@ -340,6 +344,9 @@ function showLocked() {
     $("settings-back").classList.add("hidden");
     $("restore").classList.add("hidden");
     setAuthenticated(true);
+    entries = [];
+    $("entries").innerHTML = "";
+    $("empty").classList.add("hidden");
     $("initializing").classList.add("hidden");
     $("signed-out").classList.add("hidden");
     $("signed-in").classList.add("hidden");
