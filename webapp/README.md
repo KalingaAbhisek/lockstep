@@ -14,7 +14,7 @@ globalThis.LOCKSTEP_CONFIG = Object.freeze({
 
 For a production static host, replace that value with the HTTPS origin of the separately deployed API. Add the frontend's exact origin to the API's `ALLOWED_ORIGINS` value and to the Google OAuth client's Authorized JavaScript origins.
 
-The production container exposes the PWA only below `/lockstep/`. Its assets, manifest, privacy page, and service worker resolve within that base path. The included Nginx configuration redirects `/lockstep` to `/lockstep/`, serves the application there, and returns an empty `204 No Content` response for `/` and every path outside `/lockstep/`. Configure an upstream reverse proxy to route `https://kalin.ga/lockstep` and its descendants to this frontend service.
+The production container exposes the PWA only below `/lockstep/`. Its assets, manifest, privacy page, and service worker resolve within that base path. The included Nginx configuration redirects `/lockstep` to `/lockstep/`, serves the application there, and returns a blank `404 Not Found` page for `/` and every other path. Configure an upstream reverse proxy to route `https://kalin.ga/lockstep` and its descendants to this frontend service.
 
 ## Local hosting
 
@@ -25,7 +25,7 @@ docker build -t lockstep-webapp webapp
 docker run --rm -p 5173:8080 -e LOCKSTEP_API_BASE_URL=http://host.docker.internal:8080 lockstep-webapp
 ```
 
-The container returns an empty `204 No Content` response at `http://localhost:5173/` and for every path outside `/lockstep/`.
+The container returns a blank page at `http://localhost:5173/` and for every path outside `/lockstep/`.
 
 Start the API separately with `./run-local.ps1`.
 

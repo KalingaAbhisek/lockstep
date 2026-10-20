@@ -145,7 +145,7 @@ A custom HTTPS domain is preferable for a public product and is required for a p
 4. Update API `ALLOWED_ORIGINS` as shown below.
 5. Use the API origin for extension API access and the web origin for its privacy-policy link.
 
-The frontend is published below `https://kalin.ga/lockstep/` through a path-aware reverse proxy. Route `/lockstep` and `/lockstep/*` to the frontend service. The included Nginx configuration returns `204 No Content` for the domain root and all paths outside `/lockstep/`, so the app is never exposed at `/`. For OAuth and API CORS, the web origin remains `https://kalin.ga`; paths are never included in an origin value. The extension `webBaseUrl` may include the full `https://kalin.ga/lockstep` base URL so its privacy link opens the correct page.
+The frontend is published below `https://kalin.ga/lockstep/` through a path-aware reverse proxy. Route `/lockstep` and `/lockstep/*` to the frontend service. The included Nginx configuration returns blank `404 Not Found` pages for the domain root and all other paths outside `/lockstep/`, so the app is never exposed at `/`. For OAuth and API CORS, the web origin remains `https://kalin.ga`; paths are never included in an origin value. The extension `webBaseUrl` may include the full `https://kalin.ga/lockstep` base URL so its privacy link opens the correct page.
 
 ## 6. Obtain the permanent Chrome extension ID
 
