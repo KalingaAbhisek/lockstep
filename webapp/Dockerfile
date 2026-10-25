@@ -1,6 +1,6 @@
 # Minify the app's own scripts (about 30% less to download on a first visit). Top-level names are kept, so
 # the page behaves exactly as the source files do; tests/e2e can run against the result (WEBAPP_DIR).
-FROM node:22-alpine AS assets
+FROM node:26-alpine AS assets
 WORKDIR /assets
 COPY app.js crypto-store.js image-import.js live-changes.js sw.js index.html privacy.html privacy.css manifest.webmanifest styles.css ./
 COPY vendor ./vendor
