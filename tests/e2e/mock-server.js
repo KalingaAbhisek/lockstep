@@ -100,6 +100,9 @@ http.createServer((req,res)=>{
       if(url.searchParams.get("clearCalls"))calls.length=0;
       if(url.searchParams.get("nobootstrap"))db.noBootstrap=true;
       if(url.searchParams.has("down"))db.down=url.searchParams.get("down")==="1";
+      // failNext=N&failClient=web|extension: that client's next N reads of /api/v1/bootstrap, /api/v1/account or
+      // /api/v1/lock fail with a temporary error (503 + Retry-After), like a busy or briefly unavailable API.
+      if(url.searchParams.has("failNext")){db.failNext=Number(url.searchParams.get("failNext"));db.failClient=url.searchParams.get("failClient")||"extension";}
       if(url.searchParams.get("revoke"))db.session="replaced-by-another-device";
       if(url.searchParams.get("perClientSessions")){db.perClient=true;db.sessions={web:null,extension:null};}
       // wipeVault: the server's data is deleted outside Lockstep (for example in the Firebase console); the
@@ -112,6 +115,10 @@ http.createServer((req,res)=>{
     const json=body?JSON.parse(body):null;
     if(p==="/api/v1/config")return send(res,200,{googleClientId:"test-client"});
     const clientType=req.headers["x-lockstep-client"]==="extension"?"extension":"web";
+    if(clientType===db.failClient&&db.failNext>0&&m==="GET"&&["/api/v1/bootstrap","/api/v1/account","/api/v1/lock"].includes(p)){
+      db.failNext--;res.setHeader("Retry-After","1");
+      return send(res,503,{code:"BACKEND_UNAVAILABLE",error:"Lockstep is temporarily unavailable. Please try again in a moment."});
+    }
     if(p==="/api/v1/session"&&m==="POST"&&db.perClient){ // each sign-in gets a new random token in its own slot
       const token=`session-${clientType}-${randomUUID()}`;db.sessions[clientType]=token;
       // Like VaultChangeController's session listener: the replaced session's live stream ends at once.

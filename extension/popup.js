@@ -656,6 +656,8 @@ async function load(force = false) {
     const currentLock = await send("GET_LOCK_CONFIG");
     if (epoch !== vaultViewEpoch) return false;
     if (currentLock.ok) { lockConfig = currentLock.data; updateLockSummary(); }
+    await lockIfWorkerLocked();
+    if (epoch !== vaultViewEpoch) { refreshing = false; return false; }
     entries = result.data.map((entry) => ({ ...entry, pinned: pinnedEntryIds.has(entry.id) }));
     sortEntriesByLocalPins();
     const responseReceivedAt = Date.now();
@@ -673,7 +675,7 @@ async function load(force = false) {
 
 // "Synchronizing · N changes pending" is checked again every 2 seconds while changes are waiting, so the
 // banner clears once they are uploaded (for at most a minute; the regular refresh takes over after that).
-let syncFollowTimer = null;
+let syncFollowTimer = null, listRetryTimer = null;
 async function showSyncState(followUntil = Date.now() + 60000) {
     const epoch = vaultViewEpoch;
     clearTimeout(syncFollowTimer); syncFollowTimer = null;
@@ -684,6 +686,12 @@ async function showSyncState(followUntil = Date.now() + 60000) {
         status(`${syncState.data.online ? "Synchronizing" : "Offline"}${syncState.data.pending ? ` · ${syncState.data.pending} change${syncState.data.pending === 1 ? "" : "s"} pending` : ""}`);
         if (syncState.data.online && Date.now() < followUntil) syncFollowTimer = setTimeout(() => showSyncState(followUntil), 2000);
     } else status("");
+    // The list could not be downloaded for a temporary reason: try again in 5 to 10 seconds while the popup is open.
+    clearTimeout(listRetryTimer); listRetryTimer = null;
+    if (syncState.ok && syncState.data.online && Number.isFinite(syncState.data.retryInMillis)) {
+        listRetryTimer = setTimeout(() => { listRetryTimer = null; if (epoch === vaultViewEpoch && isAuthenticated && !$("signed-in").classList.contains("hidden")) load(true); },
+            Math.max(1000, syncState.data.retryInMillis));
+    }
 }
 
 function renderEntries() {
@@ -1262,8 +1270,27 @@ async function openFromDevice(remoteState) {
     }).catch(() => null);
     return true;
 }
+// A refused or expired session, or a deleted account, means "sign in again"; anything else (a server that is busy or
+// briefly unreachable, a sign-in change still in progress) does not.
+function needsSignIn(result) {
+    return !result.ok && ["SESSION_REVOKED", "SESSION_EXPIRED", "ACCOUNT_MISSING"].includes(result.code);
+}
+// The startup check and a lock-settings read take a changed key from the server and lock the worker without
+// reporting an error (they are reads, not vault operations). If codes are on screen and the worker is now
+// locked, the lock screen replaces them.
+async function lockIfWorkerLocked() {
+    if ($("signed-in").classList.contains("hidden")) return;
+    const epoch = vaultViewEpoch;
+    const local = await send("GET_LOCAL_STATE");
+    if (epoch !== vaultViewEpoch || !local.ok || !local.data.usable || local.data.unlocked) return;
+    showLocked();
+    $("unlock-error").textContent = "Your passphrase or recovery key changed on another device. Enter your current passphrase to continue.";
+}
 async function applyRemoteState(state) {
-    if (!state.ok || !state.data.hasSubject) { showSignedOut(); return; }
+    // The screen was already chosen from this device's vault; a temporary failure of the check leaves it.
+    if (!state.ok) { if (needsSignIn(state)) showSignedOut(); return; }
+    if (!state.data.hasSubject) { showSignedOut(); return; }
+    await lockIfWorkerLocked();
     const { accountExists, newAccountSetupAuthorized, keyState, displayName } = state.data;
     if (displayName) userDisplayName = displayName;
     if (accountExists === false && !newAccountSetupAuthorized) {
@@ -1272,11 +1299,29 @@ async function applyRemoteState(state) {
     if (keyState === "none") await loadLockAndRoute(Promise.resolve(state));
 }
 
-async function loadLockAndRoute(statePromise = null) {
+// When the server could not be asked (not a sign-in problem), the screen follows this device's vault: locked (or
+// open, within the lock timeout) when it holds one, otherwise sign-in. The reason is shown; checks resume on
+// their own (the 5-10 s retries, live updates).
+async function routeFromDevice(failure, epoch, attempt) {
+    if (failure.code === "SESSION_CHANGED" || failure.code === "VIEW_CHANGED") {
+        if (attempt < 3) setTimeout(() => { if (epoch === vaultViewEpoch) void loadLockAndRoute(null, attempt + 1); }, 400);
+        return;
+    }
+    if (needsSignIn(failure)) { showSignedOut(); if (failure.error) status(failure.error, true); return; }
+    const local = await send("GET_LOCAL_STATE");
+    if (epoch !== vaultViewEpoch) return;
+    if (local.ok && local.data.usable) {
+        lockConfig = local.data.lockConfig; updateLockSummary();
+        if (local.data.unlocked) await showSignedIn(true, true); else showLocked();
+    } else showSignedOut();
+    if (failure.error) status(failure.error, true);
+}
+async function loadLockAndRoute(statePromise = null, attempt = 0) {
     const epoch = vaultViewEpoch;
     const state = await (statePromise || send("GET_VAULT_STATE"));
     if (epoch !== vaultViewEpoch) return;
-    if (!state.ok || !state.data.hasSubject) { showSignedOut(); return; }
+    if (!state.ok) { await routeFromDevice(state, epoch, attempt); return; }
+    if (!state.data.hasSubject) { showSignedOut(); return; }
     const { accountExists, newAccountSetupAuthorized, keyState, displayName } = state.data;
     userDisplayName = displayName || "";
     if (accountExists === false && !newAccountSetupAuthorized) {
@@ -1284,7 +1329,7 @@ async function loadLockAndRoute(statePromise = null) {
     }
     const result = await send("GET_LOCK_CONFIG");
     if (epoch !== vaultViewEpoch) return;
-    if (!result.ok) { showSignedOut(); return; }
+    if (!result.ok) { await routeFromDevice(result, epoch, attempt); return; }
     lockConfig = result.data;
     updateLockSummary();
     if (keyState === "none") {
@@ -1646,6 +1691,14 @@ setInterval(tick, 250);
 // returns. The interval is only a fallback for a popup that stays open; connectivity is checked locally.
 const BACKGROUND_REFRESH_MILLIS = 30000;
 let liveChanges = null, liveChangesIdentity = "", reconcilingLiveChanges = false, liveSessionEndRequests = 0;
+// See LIVE_SESSION_ENDED in the worker: a still-valid session reconnects; an unreachable server is asked again
+// (up to three times, then the session is treated as ended).
+async function confirmLiveSessionEnd(authentication, identity, attempt = 0) {
+    const result = await send("LIVE_SESSION_ENDED", { authentication, final: attempt >= 3 });
+    if (liveChangesIdentity !== identity) return;
+    if (result.ok) { liveChanges = null; liveChangesIdentity = ""; return; } // still signed in: reconnect
+    if (result.code === "UNCONFIRMED") setTimeout(() => void confirmLiveSessionEnd(authentication, identity, attempt + 1), 5000);
+}
 async function reconcileLiveChanges() {
     if (reconcilingLiveChanges || liveSessionEndRequests) return;
     reconcilingLiveChanges = true;
@@ -1658,7 +1711,7 @@ async function reconcileLiveChanges() {
         if (!config) return;
         liveChanges = LockstepLiveChanges.watch({
             connect: signal => fetch(config.url,{headers:config.headers,cache:"no-store",signal}),
-            onSession: () => send("LIVE_SESSION_ENDED",{authentication:config.authentication}),
+            onSession: () => confirmLiveSessionEnd(config.authentication, identity),
             onChange: async () => {
                 if (liveChangesIdentity !== identity) throw Object.assign(new Error("Sign-in changed"),{code:"SESSION_CHANGED"});
                 let result = await send("LIVE_SYNC",{authentication:config.authentication});
@@ -1692,7 +1745,9 @@ document.addEventListener("close", () => setTimeout(flushLiveRedraw, 0), true);
 setInterval(reconcileLiveChanges, 1000);
 let remoteLockChecking = false;
 async function refreshLockWhileBusy() {
-    if (remoteLockChecking || $("signed-in").classList.contains("hidden")) return;
+    // Only a vault that has a passphrase can have changed elsewhere. While the passphrase is being created there
+    // is nothing to check, and asking would answer "locked" and replace the setup screen with "unlock".
+    if (remoteLockChecking || $("signed-in").classList.contains("hidden") || !lockConfig?.enabled) return;
     remoteLockChecking = true;
     try { await send("CHECK_REMOTE_LOCK"); }
     finally { remoteLockChecking = false; }

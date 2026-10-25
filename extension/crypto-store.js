@@ -513,6 +513,7 @@
                 ...(remote.memoryKiB ? { memoryKiB: remote.memoryKiB, parallelism: remote.parallelism } : {}),
                 salt: remote.salt, iv: remote.iv, wrappedMasterKey: remote.wrappedMasterKey, serverRevision: revision });
             lock(subject);
+            await forgetSyncCursor(subject);
             return true;
         }
         const remoteWrappedAt = Number(remote.wrappedAt || remote.createdAt || 0);
@@ -524,6 +525,7 @@
             ...(remote.memoryKiB ? { memoryKiB: remote.memoryKiB, parallelism: remote.parallelism } : {}),
             salt: remote.salt, iv: remote.iv, wrappedMasterKey: remote.wrappedMasterKey });
         lock(subject);
+        await forgetSyncCursor(subject);
         return true;
     }
 
@@ -1372,6 +1374,14 @@
     const STARTUP_DELTA_MILLIS = 12 * 60 * 60 * 1000;
     const syncCursors = new Map();
     function cursorRecordId(subject) { return `${subject}:sync-cursor`; }
+    // A different vault key came from the server (rotation, passphrase change, or a vault deleted and created
+    // again). The next sync takes the full list: a vault created anew has no deletion records for the accounts
+    // of the one it replaced, so only a full list removes them from this device. Also forgets the saved cursor,
+    // so a restart cannot use it either.
+    async function forgetSyncCursor(subject) {
+        syncCursors.delete(subject);
+        await put("keys", { id: cursorRecordId(subject), subject, syncCursor: true, cursor: null, fullAt: 0 }).catch(() => null);
+    }
     function rememberCursor(subject, pulled) {
         if (pulled.cursor == null) { syncCursors.delete(subject); return; }
         const previous = syncCursors.get(subject);

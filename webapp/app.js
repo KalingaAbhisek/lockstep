@@ -343,6 +343,9 @@ function refreshFromServer(fromTimer = false) {
 }
 
 let liveChanges = null, liveChangesIdentity = "";
+const LIVE_SUPPORT_KEY = "authsync.liveChangesSupported";
+// What the server said the last time this browser asked; refreshed by every successful startup request.
+function rememberedLiveSupport() { try { return localStorage.getItem(LIVE_SUPPORT_KEY) === "1"; } catch { return false; } }
 function liveShareHash(text) { // FNV-1a; only names a lock and a channel inside this browser
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
@@ -351,7 +354,7 @@ function liveShareHash(text) { // FNV-1a; only names a lock and a channel inside
 function reconcileLiveChanges() {
     if (state.endingSessionRequests) return;
     const authentication = authenticationSnapshot();
-    const identity = state.liveChangesSupported && state.lockConfig.enabled && state.subject && appSessionToken() ? JSON.stringify(authentication) : "";
+    const identity = (state.liveChangesSupported ?? rememberedLiveSupport()) && state.lockConfig.enabled && state.subject && appSessionToken() ? JSON.stringify(authentication) : "";
     if (identity === liveChangesIdentity) return;
     liveChanges?.stop(); liveChanges = null; liveChangesIdentity = identity;
     if (!identity) return;
@@ -360,7 +363,10 @@ function reconcileLiveChanges() {
         // of the sign-in, so tabs of an older and a newer sign-in never pass each other's events.
         shareKey: `lockstep-live-${liveShareHash(identity)}`,
         connect: signal => authenticatedFetch("/api/v1/events", {signal, expectedAuthentication:authentication, eventStream:true}),
-        onSession: () => { if (authenticationMatches(authentication)) showSessionRevoked("This Lockstep session ended on another device. Sign in again."); },
+        // The server says this session ended. Confirmed with one request before signing out: only an answer that
+        // the session was replaced or expired signs out (api() routes that); if it is still valid, the live
+        // connection reconnects; if the server cannot be reached, it is asked again shortly.
+        onSession: () => confirmLiveSessionEnd(authentication),
         onChange: async () => {
             if (!authenticationMatches(authentication)) throw Object.assign(new Error("Sign-in changed"),{code:"SESSION_CHANGED"});
             if (state.refreshing) throw new Error("Sync in progress");
@@ -423,6 +429,25 @@ function checkConnectivity() {
     return online;
 }
 
+async function confirmLiveSessionEnd(authentication, attempt = 0) {
+    const message = "This Lockstep session ended on another device. Sign in again.";
+    // Another tab of this browser may have confirmed it first and removed the shared session: then this tab
+    // signs out too. (A new sign-in made meanwhile in another tab is left alone.)
+    const handledElsewhere = () => {
+        if (authenticationMatches(authentication)) return false;
+        if (state.subject === authentication.subject && !appSessionToken()) showSessionRevoked(message);
+        return true;
+    };
+    if (handledElsewhere()) return;
+    try {
+        await api("/api/v1/session", { expectedAuthentication: authentication });
+        if (authenticationMatches(authentication)) { liveChanges = null; liveChangesIdentity = ""; } // still valid: reconnect
+    } catch (error) {
+        if (handledElsewhere() || ["SESSION_REVOKED", "SESSION_EXPIRED"].includes(error?.code)) return; // routed by api()
+        if (attempt < 3) setTimeout(() => void confirmLiveSessionEnd(authentication, attempt + 1), TRANSIENT_RETRY_MIN_MILLIS);
+        else showSessionRevoked(message);
+    }
+}
 function showSessionRevoked(message="This Lockstep session was replaced by a login on another device.") {
     localStorage.setItem(SESSION_REVOKED_NOTICE_KEY,message);
     signOut(false,message);
@@ -617,12 +642,15 @@ async function fetchStartupState(owner) {
             LockstepVault.setLabelEncryption(Array.isArray(startup?.features) && startup.features.includes("encryptedLabels"));
             LockstepVault.setArgon2idWrapping(Array.isArray(startup?.features) && startup.features.includes("argon2idWrapping"));
             state.liveChangesSupported = Array.isArray(startup?.features) && startup.features.includes("liveChanges");
+            // Remembered, so a startup request that fails for a moment does not leave this tab without live updates.
+            try { localStorage.setItem(LIVE_SUPPORT_KEY, state.liveChangesSupported ? "1" : "0"); } catch { /* storage unavailable */ }
             return { authentication, exists: Boolean(startup?.exists), lock: startup?.lock, entries: Array.isArray(startup?.entries) ? startup.entries : null, cursor: startup?.cursor ?? null,
                 full: since == null || startup?.full !== false, deletedIds: Array.isArray(startup?.deletedIds) ? startup.deletedIds : [], generation, localGeneration };
         } catch (error) {
             if (error.status !== 404 && error.status !== 405) throw error;
             state.bootstrapUnsupported = true;
             state.liveChangesSupported = false;
+            try { localStorage.setItem(LIVE_SUPPORT_KEY, "0"); } catch { /* storage unavailable */ }
         }
     }
     const account = await request("/api/v1/account");
@@ -733,7 +761,7 @@ async function openFromDevice(owner, startupRequest) {
     if (!cached?.enabled || !appSessionToken() || await LockstepVault.keyState(owner) !== "wrapped") return false;
     state.lockConfig = normalizeLockConfig(cached);
     updateLockSummary();
-    state.startupCheck = startupRequest.then((startup) => applyStartupState(owner, startup)).catch(() => null);
+    state.startupCheck = startupRequest.then((startup) => applyStartupState(owner, startup)).catch((error) => { scheduleStartupRetry(owner, error); return null; });
     if (!await resumeUnlockedSession()) { showLocked(); return true; }
     if (navigator.onLine) {
         // This tab may have been away (another site, a reopened tab) while the key, the passphrase or the
@@ -746,6 +774,21 @@ async function openFromDevice(owner, startupRequest) {
     }
     await showUnlockedApp();
     return true;
+}
+// The startup check (lock settings, key, account) failed for a temporary reason while this browser's vault was
+// opened: it runs again in 5 to 10 seconds (or when a retry delay ends), so a passphrase or key changed elsewhere
+// still locks this tab promptly. Sign-in problems are routed by api() and never retried here.
+function scheduleStartupRetry(owner, error) {
+    const status = Number(error?.status || 0);
+    if (!(error?.code === "SYNC_COOLDOWN" || !status || status === 408 || status === 429 || status >= 500)) return;
+    clearTimeout(state.startupRetryTimer);
+    const spacing = error?.code === "SYNC_COOLDOWN" ? 250 : TRANSIENT_RETRY_MIN_MILLIS + Math.random() * (TRANSIENT_RETRY_MAX_MILLIS - TRANSIENT_RETRY_MIN_MILLIS);
+    state.startupRetryTimer = setTimeout(async () => {
+        state.startupRetryTimer = null;
+        if (ownerSubject() !== owner || !appSessionToken() || !navigator.onLine) return;
+        try { await applyStartupState(owner, await fetchStartupState(owner)); }
+        catch (next) { if (next?.code !== "SESSION_CHANGED") scheduleStartupRetry(owner, next); }
+    }, Math.max(error?.retryAfterMillis || 0, retryDelay(owner), spacing));
 }
 async function applyStartupState(owner, startup) {
     assertStartupAuthentication(startup);
@@ -976,6 +1019,9 @@ function signOut(showMessage = false, message = "Signed out securely", preserveS
     stopScreenLockWatch();
     stopInactivityWatch();
     stopPendingSyncRetry();
+    // A retry delay belongs to the session that ended: the next sign-in syncs at once.
+    syncRetryStates.clear(); clearTimeout(state.listRetryTimer); state.listRetryTimer = null;
+    clearTimeout(state.startupRetryTimer); state.startupRetryTimer = null;
     cancelVaultOperations();
     closeVaultSurfaces();
     clearTimeout(state.tokenExpiryTimer);state.tokenExpiryTimer=null;
@@ -1398,6 +1444,7 @@ async function loadEntries(force = false) {
             }
             state.offline = true;
             state.lastSyncError = error.message;
+            scheduleListRetry(error);
         }
         assertVaultOperation(epoch);state.pendingChanges = await LockstepVault.pendingCount(ownerSubject());assertVaultOperation(epoch);
         const loaded = await LockstepVault.listEntries(ownerSubject());
@@ -1414,6 +1461,24 @@ async function loadEntries(force = false) {
     } finally {
         if(epoch===state.vaultEpoch)state.refreshing = false;
     }
+}
+
+// A download that failed while online for a temporary reason (no connection to Lockstep, a timeout, a server
+// error, "try later", or a retry delay still running) is tried again after 5 to 10 seconds (or the server's
+// Retry-After), even when nothing is waiting to upload. Sign-in, validation and conflict errors are not retried.
+function scheduleListRetry(error) {
+    const status = Number(error?.status || 0);
+    const temporary = error?.code === "SYNC_COOLDOWN" || !status || status === 408 || status === 429 || status >= 500;
+    if (!temporary || !navigator.onLine) return; // going online reloads the list by itself
+    clearTimeout(state.listRetryTimer);
+    const owner = ownerSubject(), epoch = state.vaultEpoch;
+    // Waiting out a retry delay that is already running: try again the moment it ends (it is the 5-10 s spacing).
+    const spacing = error?.code === "SYNC_COOLDOWN" ? 250 : TRANSIENT_RETRY_MIN_MILLIS + Math.random() * (TRANSIENT_RETRY_MAX_MILLIS - TRANSIENT_RETRY_MIN_MILLIS);
+    const delay = Math.max(error?.retryAfterMillis || 0, retryDelay(owner), spacing);
+    state.listRetryTimer = setTimeout(() => {
+        state.listRetryTimer = null;
+        if (ownerSubject() === owner && epoch === state.vaultEpoch && isVaultOperational() && !document.hidden && navigator.onLine) loadEntries(true);
+    }, delay);
 }
 
 // "6 synchronized accounts" only when nothing is waiting to upload; otherwise "6 accounts · 1 change waiting

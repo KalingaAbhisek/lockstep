@@ -40,6 +40,19 @@ async function ensureServerFeatures() {
 }
 
 let lastSyncError = null;
+// When the last sync failed for a temporary reason (no connection to Lockstep, a timeout, a server error, "try
+// later", a retry delay still running): when to try again. An open popup reloads its list then (5 to 10 seconds,
+// or the server's Retry-After), even when nothing is waiting to upload. Never set for sign-in, validation or
+// conflict errors.
+let syncRetryAt = 0;
+function noteSyncFailure(owner, error) {
+    const status = Number(error?.status || 0);
+    const temporary = error?.code === "SYNC_COOLDOWN" || (!["SESSION_CHANGED", "SESSION_EXPIRED", "SESSION_REVOKED", "VAULT_LOCKED", "ACCOUNT_MISSING", "VAULT_REPLACED"].includes(error?.code)
+        && (!status || status === 408 || status === 429 || status >= 500));
+    // Waiting out a retry delay that is already running: try again the moment it ends (it is the 5-10 s spacing).
+    const spacing = error?.code === "SYNC_COOLDOWN" ? 250 : TRANSIENT_RETRY_MIN_MILLIS + Math.random() * (TRANSIENT_RETRY_MAX_MILLIS - TRANSIENT_RETRY_MIN_MILLIS);
+    syncRetryAt = temporary ? Date.now() + Math.max(error?.retryAfterMillis || 0, retryDelay(owner), spacing) : 0;
+}
 let authenticationGeneration = 0;
 let authenticationTransition = false;
 let authenticationWrites = Promise.resolve();
@@ -168,10 +181,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         GET_LOCK_CONFIG: getLockConfig,
         CHECK_REMOTE_LOCK: checkRemoteLock,
         GET_CHANGE_STREAM_AUTH: changeStreamAuthentication,
+        // The server says this session ended. Confirmed with one request before signing out: an answer that the
+        // session was replaced or expired signs out (api() does that); if it is still valid the popup reconnects;
+        // if the server cannot be reached the popup asks again shortly ("UNCONFIRMED").
         LIVE_SESSION_ENDED: async () => {
-            const messageText = "This Lockstep session ended on another device. Sign in again.";
-            if (!await invalidateAuthentication(messageText,message.authentication)) throw coded("SESSION_CHANGED","Sign-in changed.");
-            throw coded("SESSION_REVOKED",messageText);
+            if (!await authenticationMatches(message.authentication)) throw coded("SESSION_CHANGED","Sign-in changed.");
+            try { await api("/api/v1/session", { expectedAuthentication: message.authentication }); return { active: true }; }
+            catch (error) {
+                if (["SESSION_REVOKED","SESSION_EXPIRED","SESSION_CHANGED"].includes(error?.code)) throw error;
+                if (!message.final) throw coded("UNCONFIRMED", "Lockstep could not confirm the session. Trying again.");
+                const messageText = "This Lockstep session ended on another device. Sign in again.";
+                if (!await invalidateAuthentication(messageText,message.authentication)) throw coded("SESSION_CHANGED","Sign-in changed.");
+                throw coded("SESSION_REVOKED",messageText);
+            }
         },
         LIVE_SYNC: async () => {
             if (!await authenticationMatches(message.authentication)) throw coded("SESSION_CHANGED","Sign-in changed.");
@@ -369,6 +391,8 @@ async function invalidateAuthentication(message = "", expected = null, erase = f
         }
         authenticationGeneration++;
         forgetRecentReads();
+        // A retry delay belongs to the session that ended: the next sign-in syncs at once.
+        syncRetryStates.clear(); syncRetryAt = 0; lastSyncError = null;
         if(snapshot.owner)LockstepVault.lock(snapshot.owner);
         await stopPendingSync();
         await chrome.storage.session.clear();
@@ -578,12 +602,13 @@ async function vaultStateNow() {
             accountExists = startup.exists;
             if (accountExists) {
                 const config = startup.lock;
-                await LockstepVault.synchronizeWrappedKey(owner, config.wrappedKey, config.vaultRevision);
+                const keyChanged = await LockstepVault.synchronizeWrappedKey(owner, config.wrappedKey, config.vaultRevision);
                 await assertStartupAuthentication(startup);
                 await chrome.storage.local.set({ cachedLockConfig: config });
                 await assertStartupAuthentication(startup);
                 rememberLockConfig(owner, config);
-                if (startup.entries) prefetchedVault = { owner, authentication: startup.authentication, entries: startup.entries, cursor: startup.cursor, full: startup.full, deletedIds: startup.deletedIds, generation: startup.generation, localGeneration: startup.localGeneration, fetchedAt: Date.now() };
+                // After a key change the next sync takes the full list (see forgetSyncCursor), not these changes.
+                if (startup.entries && !keyChanged) prefetchedVault = { owner, authentication: startup.authentication, entries: startup.entries, cursor: startup.cursor, full: startup.full, deletedIds: startup.deletedIds, generation: startup.generation, localGeneration: startup.localGeneration, fetchedAt: Date.now() };
             }
         } catch (error) { if(error.code === "SESSION_CHANGED") throw error; accountExists = null; }
     }
@@ -652,6 +677,8 @@ async function changeStreamAuthentication() {
 async function checkRemoteLock() {
     const authentication = await authenticationSnapshot();
     const owner = authentication.owner;
+    // No vault key yet (a passphrase is being created, or a vault is being restored): nothing to compare.
+    if (await LockstepVault.keyState(owner) === "none") return false;
     if (!LockstepVault.isUnlocked(owner)) throw coded("VAULT_LOCKED", "Vault locked. Unlock it to continue.");
     assertSyncCooldown(owner);
     const latest = await api("/api/v1/lock", { expectedAuthentication: authentication });
@@ -770,7 +797,7 @@ async function synchronize(allowLockedPull = false) {
         }
         const result = await LockstepVault.synchronize(owner, transport(owner),allowLockedPull,prefetched);
         await rememberSyncNotice(result.notice);
-        lastSyncError = null;syncRetryStates.delete(owner);
+        lastSyncError = null;syncRetryStates.delete(owner);syncRetryAt = 0;
         if(result.pending)await schedulePendingSync(TRANSIENT_RETRY_MIN_MILLIS);else await stopPendingSync();
         // Entries saved by older versions still have readable names on the server: re-save them encrypted.
         if (LockstepVault.isUnlocked(owner) && await LockstepVault.sealPlaintextLabels(owner).catch(() => 0)) await schedulePendingSync(0);
@@ -778,6 +805,7 @@ async function synchronize(allowLockedPull = false) {
     } catch (error) {
         await rememberSyncNotice(error?.notice); // a refused change was dropped before a later step failed
         lastSyncError = error?.message || "Lockstep could not sync. It will try again.";
+        noteSyncFailure(owner, error);
         if(await LockstepVault.pendingCount(owner))await schedulePendingSync(TRANSIENT_RETRY_MIN_MILLIS);
         throw error;
     }
@@ -975,7 +1003,8 @@ async function rotateEncryptionKey(passcode) {
 async function syncState() {
     const { syncNotice } = await chrome.storage.session.get("syncNotice").catch(() => ({}));
     if (syncNotice) await chrome.storage.session.remove("syncNotice").catch(() => {});
-    return { online: await checkConnectivity(), pending: await LockstepVault.pendingCount(await subject()), error: lastSyncError, notice: syncNotice || null };
+    return { online: await checkConnectivity(), pending: await LockstepVault.pendingCount(await subject()), error: lastSyncError, notice: syncNotice || null,
+        retryInMillis: lastSyncError && syncRetryAt ? Math.max(0, syncRetryAt - Date.now()) : null };
 }
 
 // Re-protects a PBKDF2 vault with Argon2id after the user agreed. Saving the re-wrapped key replaces the one
@@ -1084,12 +1113,14 @@ async function getLockConfig() {
             await chrome.storage.local.set({ cachedLockConfig: config });
             rememberLockConfig(owner, config);
         }
-    } catch {
+    } catch (error) {
         const cached = await chrome.storage.local.get("cachedLockConfig");
         config = cached.cachedLockConfig;
         // Offline / expired token but this device holds a protected key: the lock obviously exists.
         if (!config && keyState === "wrapped") config = { enabled: true, timeoutSeconds: 300, lockOnScreenLock:false };
-        if (!config) throw coded("SESSION_EXPIRED", "Session expired. Sign in with Google again.");
+        // Nothing known on this device: report what actually failed. Only a refused or expired session means
+        // "sign in again" (api() has already signed out for those); a server that is briefly unreachable does not.
+        if (!config) throw error?.code ? error : coded("BACKEND_UNAVAILABLE", "Can't reach Lockstep. Check your internet connection and try again.");
     }
     // A passkey-wrapped key on this device means the lock is on, whatever a stale cache/server says.
     if (keyState === "wrapped" && !config.enabled) config = { ...config, enabled: true };

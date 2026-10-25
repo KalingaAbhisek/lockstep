@@ -119,13 +119,46 @@ async function until(check, timeout, what) {
    await tab.close();
   }
 
+  // 5. A download that failed while online (nothing waiting to upload) is retried within 5 to 10 seconds: a change
+  //    made by the other client right after the server recovers shows up without waiting for the 30-second refresh
+  //    (this scenario has no live updates).
+  {
+   const extensionId = worker.url().split("/")[2];
+   const popup = await context.newPage(); popup.on("pageerror", e => errors.push(`popup: ${e.message}`));
+   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+   await popup.waitForSelector("#entries .entry:not(.entry-skel)", { timeout: 15000 });
+   await web.waitForTimeout(1500);
+   const shows = (page, name, timeout) => page.waitForFunction(n => [...document.querySelectorAll("#entries .issuer")].some(e => e.textContent === n), name, { timeout });
+   // Web app: its download fails, the server recovers, the extension adds an account.
+   await control("down=1");
+   const firstLoad = await web.evaluate(async () => { const before = state.refreshing; await loadEntries(true); return { before, lastSyncError: state.lastSyncError, timer: Boolean(state.listRetryTimer), hidden: document.hidden }; });
+   log("web: refresh while the server is down:", JSON.stringify(firstLoad));
+   assert.equal(await web.evaluate(() => LockstepVault.pendingCount("user-1")), 0);
+   await control("down=0");
+   let started = Date.now();
+   await worker.evaluate(u => addOtpUri(u), uri("After failed download web", "NBSWY3DPO5XXE3DE"));
+   await shows(web, "After failed download web", 12000).catch(async error => {
+    throw Error(`${error.message} ${JSON.stringify(await web.evaluate(() => ({ hidden: document.hidden, timer: Boolean(state.listRetryTimer), refreshing: state.refreshing, lastSyncError: state.lastSyncError, retry: retryDelay("user-1"), names: [...document.querySelectorAll("#entries .issuer")].map(n => n.textContent) })))}`);
+   });
+   log(`web: download failed while online with nothing to upload; retried and showed the other client's change ${Date.now() - started} ms after it was made`);
+   // Extension popup: the same, with the web app adding the account.
+   await control("down=1");
+   await popup.evaluate(() => load(true));
+   await control("down=0");
+   started = Date.now();
+   await web.evaluate(u => importUris([u]), uri("After failed download ext", "MZXW6YTBOI"));
+   await shows(popup, "After failed download ext", 12000);
+   log(`extension: download failed while online with nothing to upload; retried and showed the other client's change ${Date.now() - started} ms after it was made`);
+   await popup.close();
+  }
+
   // No duplicates anywhere.
-  const expected = JSON.stringify(["Existing", "Extension while down", "Scanned in tab", "Scanned offline", "While server down"]);
+  const expected = JSON.stringify(["After failed download ext", "After failed download web", "Existing", "Extension while down", "Scanned in tab", "Scanned offline", "While server down"]);
   const webNames = async () => JSON.stringify((await web.evaluate(async () => { await syncVault().catch(() => null); return (await LockstepVault.listEntries("user-1")).map(e => e.issuer); })).sort());
   await until(async () => await webNames() === expected, 10000, `web app list ${await webNames()}`);
   const extNames = JSON.stringify((await worker.evaluate(async () => { await synchronize(); return (await localEntries()).map(e => e.issuer); })).sort());
   assert.equal(extNames, expected, "the extension's list differs");
-  assert.equal(await serverCount(), 5, "duplicates on the server");
+  assert.equal(await serverCount(), 7, "duplicates on the server");
   assert.deepEqual(errors, []);
   log("no duplicates; all clients agree");
  } finally { await context.close(); }

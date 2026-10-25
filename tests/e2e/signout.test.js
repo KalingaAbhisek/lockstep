@@ -4,10 +4,10 @@ function section(a,b){return source.slice(source.indexOf(a),source.indexOf(b,sou
 (async()=>{for(const failure of [false,true]){
 let local={vaultSubject:"A",appSessionId:"session"},erased=false;
 const box={chrome:{storage:{local:{get:async()=>({...local}),remove:async keys=>{for(const k of keys)delete local[k];}},session:{clear:async()=>{}}}},
-LockstepVault:{lock:()=>{},clearSubject:async owner=>{assert.equal(owner,"A");if(failure)throw Error("disk failed");erased=true;}},forgetRecentReads:()=>{},stopPendingSync:async()=>{}};
+syncRetryStates:new Map([["A",{failures:3,until:Date.now()+9000,serverUntil:0}]]),LockstepVault:{lock:()=>{},clearSubject:async owner=>{assert.equal(owner,"A");if(failure)throw Error("disk failed");erased=true;}},forgetRecentReads:()=>{},stopPendingSync:async()=>{}};
 vm.createContext(box);vm.runInContext(section("let authenticationGeneration","let tokenRefreshPromise")+section("async function invalidateAuthentication(","async function subject("),box);
 if(failure){await assert.rejects(box.invalidateAuthentication("",null,true));assert.equal(local.vaultSubject,"A");}
-else{await box.invalidateAuthentication("",null,true);assert(erased);assert.equal(local.vaultSubject,undefined);}
+else{await box.invalidateAuthentication("",null,true);assert(erased);assert.equal(local.vaultSubject,undefined);assert.equal(box.syncRetryStates.size,0,"a retry delay outlived the session that ended");}
 }
 const popup=fs.readFileSync(require("path").join(__dirname,"../../extension/popup.js"),"utf8");
 let confirmed=false,sent=0,shown=0;
