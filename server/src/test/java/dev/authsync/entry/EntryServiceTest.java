@@ -37,6 +37,20 @@ class EntryServiceTest {
     }
 
     @Test
+    void anEditPassesTheVersionItWasMadeFromToTheRepository() {
+        UUID base = UUID.randomUUID();
+        when(repository.save(any(), any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+        var request = new EntryService.PutEntryRequest("Encrypted", "Encrypted",
+                Base64.getEncoder().encodeToString(new byte[33]), Base64.getEncoder().encodeToString(new byte[12]),
+                1, "SHA1", 6, 30, 1_760_854_000_000L, UUID.randomUUID(), null, null, base);
+
+        service.put(new AuthenticatedUser("google-sub", null, null), UUID.randomUUID(), request);
+
+        verify(repository).save(any(), any(), eq(base));
+        verify(repository, never()).save(any(), any());
+    }
+
+    @Test
     void rejectsGuessableNonV4EntryIdentifiers() {
         UUID sequential = UUID.fromString("00000000-0000-1000-8000-000000000001");
         var request = new EntryService.PutEntryRequest("Example", "person@example.com",

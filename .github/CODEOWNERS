@@ -1,0 +1,29 @@
+# Changes to these paths need the owner's review once branch protection requires code-owner reviews
+# (Settings → Branches → main → "Require review from Code Owners").
+
+# Everything by default.
+*                                   @KalingaAbhisek
+
+# Security-sensitive: authentication, sessions, vault and key handling, request limits.
+/server/src/main/java/dev/authsync/config/   @KalingaAbhisek
+/server/src/main/java/dev/authsync/session/  @KalingaAbhisek
+/server/src/main/java/dev/authsync/lock/     @KalingaAbhisek
+/server/src/main/java/dev/authsync/vault/    @KalingaAbhisek
+/server/src/main/resources/                  @KalingaAbhisek
+
+# Client-side cryptography, vendored libraries and the extension's permissions.
+/webapp/crypto-store.js                      @KalingaAbhisek
+/extension/crypto-store.js                   @KalingaAbhisek
+/extension/manifest.json                     @KalingaAbhisek
+/webapp/vendor/                              @KalingaAbhisek
+/extension/vendor/                           @KalingaAbhisek
+/tools/                                      @KalingaAbhisek
+
+# Headers, Firestore rules, deployment and CI.
+/webapp/nginx.conf                           @KalingaAbhisek
+/firebase.json                               @KalingaAbhisek
+/firestore.rules                             @KalingaAbhisek
+/firestore.indexes.json                      @KalingaAbhisek
+/Dockerfile                                  @KalingaAbhisek
+/webapp/Dockerfile                           @KalingaAbhisek
+/.github/                                    @KalingaAbhisek

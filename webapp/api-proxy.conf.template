@@ -1,0 +1,16 @@
+# Same-origin API proxy: the browser calls /lockstep/api/..., nginx forwards it to the API, and the
+# session can then live in an HttpOnly cookie (see webapp/README.md). The cookie path becomes /lockstep/api.
+location /lockstep/api/ {
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 300s;
+    proxy_pass ${LOCKSTEP_API_BASE_URL}/api/;
+    proxy_ssl_server_name on;
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_cookie_path /api /lockstep/api;
+    # Ordinary requests are limited to 1 MiB by the API itself; a recovery-key rotation may send up to 8 MiB.
+    client_max_body_size 8m;
+}
+

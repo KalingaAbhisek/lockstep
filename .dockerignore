@@ -3,6 +3,9 @@
 .idea
 .vscode
 .env
+.env.*
+**/.env
+**/.env.*
 secrets
 dist
 extension
@@ -10,3 +13,5 @@ webapp
 **/target
 **/*.log
 _backup_before_restore
+tests
+.github

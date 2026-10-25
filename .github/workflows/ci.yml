@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Actions are pinned to full commit SHAs (the comment names the release); Dependabot keeps them current.
+jobs:
+  server:
+    name: API tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B -pl server -am test
+
+  firestore:
+    name: API tests against the Firestore emulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      # Concurrent saves, rotation against passphrase changes, reset against saves, large rotations.
+      - name: Transaction tests (emulator)
+        run: >
+          npx --yes firebase-tools@14 emulators:exec --project demo-lockstep --only firestore
+          "mvn -B -pl server -am test -Dtest=FirestoreEmulatorTest,VaultChangeControllerTest -Dsurefire.failIfNoSpecifiedTests=false"
+
+  clients:
+    name: Web app and extension checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Generate public client configuration (no credentials)
+        shell: pwsh
+        run: |
+          ./tools/test-env-config.ps1
+          ./configure-clients.ps1 -EnvFile .env.example
+      - name: JavaScript syntax
+        run: for file in webapp/*.js extension/*.js tests/e2e/*.js tools/argon2id/*.js tools/vendor/*.js; do node --check "$file"; done
+      # Every vendored library matches tools/vendor/manifest.json (versions, licenses, SHA-256), the web app
+      # and extension ship identical copies, and jsQR still matches its upstream release file.
+      - name: Shared vault code is identical in both clients
+        run: |
+          cmp webapp/crypto-store.js extension/crypto-store.js
+          cmp webapp/image-import.js extension/image-import.js
+          cmp webapp/live-changes.js extension/live-changes.js
+      - name: Vendored libraries
+        run: node tools/vendor/verify.js --upstream
+      - name: Argon2id test vectors (vendored build)
+        run: |
+          node tools/argon2id/verify.js webapp/vendor/argon2id.js
+          cmp webapp/vendor/argon2id.js extension/vendor/argon2id.js
+      - name: Browser tests (mock API)
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm test
+      # The container image serves minified scripts; run the main web scenarios against exactly those files.
+      - name: Browser tests (minified web app)
+        run: |
+          docker build --target minified-files --output type=local,dest="$RUNNER_TEMP/minified" webapp
+          cp -r webapp "$RUNNER_TEMP/webapp-minified"
+          cp "$RUNNER_TEMP"/minified/*.js "$RUNNER_TEMP/webapp-minified/"
+          cd tests/e2e
+          WEBAPP_DIR="$RUNNER_TEMP/webapp-minified" ONLY=web-main,web-deletion,web-concurrency,web-revision,web-argon2id-reauth,web-export npm test
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the whole history, not just the latest commit
+      # Fails when a key, token or credential is committed. Free for personal accounts (no license needed).
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  images:
+    name: Container image scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload the full reports to the repository's code-scanning page
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: docker build -t lockstep-api:ci . && docker build -t lockstep-web:ci webapp
+      # Fails on fixable critical or high vulnerabilities in either image.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lockstep-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lockstep-web:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      # Full reports (every severity, including findings without a fix yet) on the Security → Code scanning
+      # page; they never fail the build, the two checks above do.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lockstep-api:ci
+          format: sarif
+          output: trivy-api.sarif
+          exit-code: "0"
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lockstep-web:ci
+          format: sarif
+          output: trivy-web.sarif
+          exit-code: "0"
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: always()
+        with:
+          sarif_file: trivy-api.sarif
+          category: trivy-api
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: always()
+        with:
+          sarif_file: trivy-web.sarif
+          category: trivy-web
+      # Software bill of materials (CycloneDX) for both images, kept as a build artifact.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lockstep-api:ci
+          format: cyclonedx
+          output: sbom-api.cdx.json
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lockstep-web:ci
+          format: cyclonedx
+          output: sbom-web.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom
+          path: sbom-*.cdx.json
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Blocks pull requests that add dependencies with known high-severity vulnerabilities.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high

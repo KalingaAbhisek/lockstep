@@ -81,20 +81,28 @@ async function selectAndScan(screenshot) {
     hint.textContent = "Release to scan · Esc to cancel";
     const tutorial = document.createElement("div");
     tutorial.className = "tutorial";
-    tutorial.innerHTML = `
-        <div class="preview" aria-hidden="true">
-            <div class="qr">
-                <svg viewBox="0 0 21 21" shape-rendering="crispEdges">
-                    <path fill="#152238" d="M1 1h7v7H1zm2 2v3h3V3zM13 1h7v7h-7zm2 2v3h3V3zM1 13h7v7H1zm2 2v3h3v-3zM10 2h2v2h-2zM9 5h3v2H9zM10 9h2v3h-2zM13 9h2v2h-2zM16 9h4v2h-4zM9 13h3v2H9zM13 12h2v4h-2zM16 13h2v2h-2zM19 12h1v4h-1zM9 17h2v3H9zM12 18h3v2h-3zM16 17h4v3h-2v-1h-2z"/>
-                </svg>
-            </div>
-            <div class="demo-selection"></div>
-            <svg class="cursor" viewBox="0 0 26 34" aria-hidden="true">
-                <path d="M2 2v25l7-6 5 11 5-2-5-11h9z" fill="#fff" stroke="#142033" stroke-width="2" stroke-linejoin="round"/>
-            </svg>
-        </div>
-        <p class="title">Drag to select the QR code</p>
-        <p class="subtitle">Draw a box around the complete code · <kbd>Esc</kbd> cancels</p>`;
+    // Built with DOM calls, not innerHTML: pages that enforce Trusted Types (many Google pages showing
+    // 2-step QR codes do) would otherwise refuse the markup and break the scanner.
+    const svgNode = (tag, attributes) => {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+        return node;
+    };
+    const htmlNode = (tag, className, ...children) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        node.append(...children);
+        return node;
+    };
+    const qrSvg = svgNode("svg", { viewBox: "0 0 21 21", "shape-rendering": "crispEdges" });
+    qrSvg.append(svgNode("path", { fill: "#152238", d: "M1 1h7v7H1zm2 2v3h3V3zM13 1h7v7h-7zm2 2v3h3V3zM1 13h7v7H1zm2 2v3h3v-3zM10 2h2v2h-2zM9 5h3v2H9zM10 9h2v3h-2zM13 9h2v2h-2zM16 9h4v2h-4zM9 13h3v2H9zM13 12h2v4h-2zM16 13h2v2h-2zM19 12h1v4h-1zM9 17h2v3H9zM12 18h3v2h-3zM16 17h4v3h-2v-1h-2z" }));
+    const cursor = svgNode("svg", { class: "cursor", viewBox: "0 0 26 34", "aria-hidden": "true" });
+    cursor.append(svgNode("path", { d: "M2 2v25l7-6 5 11 5-2-5-11h9z", fill: "#fff", stroke: "#142033", "stroke-width": "2", "stroke-linejoin": "round" }));
+    const preview = htmlNode("div", "preview", htmlNode("div", "qr", qrSvg), htmlNode("div", "demo-selection"), cursor);
+    preview.setAttribute("aria-hidden", "true");
+    tutorial.append(preview,
+        htmlNode("p", "title", "Drag to select the QR code"),
+        htmlNode("p", "subtitle", "Draw a box around the complete code · ", htmlNode("kbd", "", "Esc"), " cancels"));
     const selection = document.createElement("div");
     selection.className = "selection";
     shadow.append(style, hint, tutorial, selection);
@@ -144,14 +152,34 @@ async function selectAndScan(screenshot) {
                 throw new Error("The extension background service is unavailable. Reload Lockstep from chrome://extensions and try again.");
             }
             if (!result.ok) throw new Error(result.error);
-            alert("Authenticator added to Lockstep.");
-        } catch (error) { alert(`Lockstep: ${error.message}`); }
+            showScanResult(navigator.onLine ? "Account added to Lockstep." : "Account added to Lockstep. It syncs when you are back online.");
+        } catch (error) { showScanResult(`Lockstep: ${error.message}`, true); }
     });
+}
+
+// The result appears inside the page in Lockstep's own style, in a closed shadow root, instead of window.alert:
+// an alert blocks the page until dismissed, and the page itself could replace or suppress it. Styles are set
+// through the style properties (not a <style> element), so pages with a strict style policy cannot block them.
+function showScanResult(message, isError = false) {
+    globalThis.__authsyncScanResult?.remove();
+    const host = document.createElement("div");
+    host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:50%;bottom:24px;transform:translateX(-50%);";
+    const notice = document.createElement("div");
+    notice.setAttribute("role", isError ? "alert" : "status");
+    notice.textContent = message;
+    notice.style.cssText = `display:block;box-sizing:border-box;max-width:min(440px,calc(100vw - 32px));padding:12px 16px;border:1px solid #ffffff2e;border-radius:14px;
+        background:${isError ? "#8f1d2c" : "#101828"};color:#fff;font:600 14px/1.4 system-ui,sans-serif;box-shadow:0 10px 30px #0006;cursor:pointer;`;
+    host.attachShadow({ mode: "closed" }).append(notice);
+    document.documentElement.append(host);
+    globalThis.__authsyncScanResult = host;
+    const remove = () => { host.remove(); if (globalThis.__authsyncScanResult === host) globalThis.__authsyncScanResult = null; };
+    host.addEventListener("click", remove);
+    setTimeout(remove, isError ? 8000 : 4500);
 }
 
 async function detectTotpQr(canvas) {
     if (typeof globalThis.jsQR !== "function") {
-        throw new Error("The bundled QR decoder could not be loaded.");
+        throw new Error("The QR scanner could not be loaded. Reload Lockstep and try again.");
     }
     const context = canvas.getContext("2d", { willReadFrequently: true });
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -167,7 +195,7 @@ function loadImage(source) {
     return new Promise((resolve, reject) => {
         const image = new Image();
         image.onload = () => resolve(image);
-        image.onerror = () => reject(new Error("Could not read the captured tab."));
+        image.onerror = () => reject(new Error("Lockstep could not read this tab. Try again."));
         image.src = source;
     });
 }

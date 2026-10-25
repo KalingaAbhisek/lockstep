@@ -6,28 +6,13 @@ $envFile = Join-Path $projectRoot ".env"
 $wrapper = Join-Path $projectRoot "mvnw.cmd"
 
 if (-not (Test-Path -LiteralPath $envFile)) {
-    $initialValues = @(
-        "# Local Lockstep configuration. This file is ignored by Git.",
-        "GOOGLE_WEB_CLIENT_ID=",
-        "GOOGLE_EXTENSION_CLIENT_ID=",
-        "ALLOWED_ORIGINS=http://localhost:5173",
-        "FIREBASE_PROJECT_ID=",
-        "GOOGLE_APPLICATION_CREDENTIALS=",
-        "LOCKSTEP_API_BASE_URL=http://localhost:8080"
-    )
-    [IO.File]::WriteAllLines($envFile, $initialValues)
+    Copy-Item -LiteralPath (Join-Path $projectRoot ".env.example") -Destination $envFile
     Write-Host "Created .env. Add the Google and Firebase settings before starting Lockstep." -ForegroundColor Yellow
 }
 
-Get-Content -LiteralPath $envFile |
-    Where-Object { $_ -and -not $_.TrimStart().StartsWith("#") } |
-    ForEach-Object {
-        $variableName, $variableValue = $_ -split "=", 2
-        if ($variableName -and $variableValue) {
-            $cleanValue = $variableValue.Trim().Trim('"').Trim("'")
-            if ($cleanValue) { [Environment]::SetEnvironmentVariable($variableName.Trim(), $cleanValue, "Process") }
-        }
-    }
+. (Join-Path $projectRoot "tools/Load-Env.ps1")
+Import-LockstepEnv -Path $envFile
+& (Join-Path $projectRoot "configure-clients.ps1") -EnvFile $envFile
 
 if ($InitializeOnly) {
     Write-Host ".env is ready. Encryption keys are generated and retained by each client." -ForegroundColor Green
@@ -35,14 +20,20 @@ if ($InitializeOnly) {
 }
 
 if (-not $env:FIREBASE_PROJECT_ID) { throw "FIREBASE_PROJECT_ID is blank in .env." }
-if (-not $env:GOOGLE_APPLICATION_CREDENTIALS) { throw "GOOGLE_APPLICATION_CREDENTIALS is blank in .env." }
 
-if (-not [IO.Path]::IsPathRooted($env:GOOGLE_APPLICATION_CREDENTIALS)) {
-    $resolvedCredentialsPath = [IO.Path]::GetFullPath((Join-Path $projectRoot $env:GOOGLE_APPLICATION_CREDENTIALS))
-    [Environment]::SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", $resolvedCredentialsPath, "Process")
-}
-if (-not (Test-Path -LiteralPath $env:GOOGLE_APPLICATION_CREDENTIALS -PathType Leaf)) {
-    throw "The Firebase service-account file does not exist: $env:GOOGLE_APPLICATION_CREDENTIALS"
+if ($env:GOOGLE_APPLICATION_CREDENTIALS) {
+    # Optional service-account key file (kept for existing setups).
+    if (-not [IO.Path]::IsPathRooted($env:GOOGLE_APPLICATION_CREDENTIALS)) {
+        $resolvedCredentialsPath = [IO.Path]::GetFullPath((Join-Path $projectRoot $env:GOOGLE_APPLICATION_CREDENTIALS))
+        [Environment]::SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", $resolvedCredentialsPath, "Process")
+    }
+    if (-not (Test-Path -LiteralPath $env:GOOGLE_APPLICATION_CREDENTIALS -PathType Leaf)) {
+        throw "The Firebase service-account file does not exist: $env:GOOGLE_APPLICATION_CREDENTIALS"
+    }
+} else {
+    # Recommended: no key file. The API uses your own Google login (Application Default Credentials).
+    # Run once:  gcloud auth application-default login
+    Write-Host "Using Application Default Credentials (gcloud auth application-default login)." -ForegroundColor Cyan
 }
 
 Push-Location $projectRoot

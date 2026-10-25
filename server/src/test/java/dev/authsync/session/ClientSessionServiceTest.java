@@ -43,6 +43,19 @@ class ClientSessionServiceTest {
     }
 
     @Test
+    void headerSubjectsThatAreNotPlainDocumentIdsAreNeverLookedUp() {
+        Jwt web = jwt("user-1", "shared-client");
+        String token = service.register(web, "web").sessionToken();
+        assertThat(service.validate("user-1", "web", token).status()).isEqualTo(ClientSessionService.SessionStatus.ACTIVE);
+        for (String subject : List.of("user-1/clientSessions/web/x", "..", ".", "__name__", "user\n1", "", " ")) {
+            int lookups = repository.lookups;
+            assertThat(service.validate(subject, "web", token).status()).isEqualTo(ClientSessionService.SessionStatus.REVOKED);
+            assertThat(repository.lookups).isEqualTo(lookups);
+        }
+        assertThat(ClientSessionService.isUsableSubject("110248495921238986420")).isTrue();
+    }
+
+    @Test
     void sessionExpiresThirtyDaysAfterGoogleSignIn() {
         Jwt web=jwt("user-1","shared-client");
         ClientSessionService.RegisteredSession registered=service.register(web,"web");
@@ -92,6 +105,7 @@ class ClientSessionServiceTest {
 
         @Override
         public Optional<StoredSession> find(String googleSubject, ClientType clientType) {
+            lookups++;
             return Optional.ofNullable(sessions.get(googleSubject + ":" + clientType.value()));
         }
 
@@ -102,5 +116,6 @@ class ClientSessionServiceTest {
         }
 
         private final Map<String, StoredSession> sessions = new HashMap<>();
+        int lookups;
     }
 }

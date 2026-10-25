@@ -1,0 +1,32 @@
+{
+  "comment": "Third-party files shipped in webapp/vendor and extension/vendor (identical copies). tools/vendor/verify.js checks every SHA-256; with --upstream it also downloads jsQR from GitHub and compares it.",
+  "files": {
+    "jsQR.js": {
+      "name": "jsQR",
+      "version": "1.4.0",
+      "license": "Apache-2.0",
+      "licenseFile": "jsQR.LICENSE",
+      "upstream": "https://github.com/cozmo/jsQR",
+      "source": "dist/jsQR.js at commit 34d8eec1ec5d85496f3948ff02fcfe6406f89d81 (the 1.4.0 release)",
+      "download": "https://raw.githubusercontent.com/cozmo/jsQR/34d8eec1ec5d85496f3948ff02fcfe6406f89d81/dist/jsQR.js",
+      "sha256": "bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859"
+    },
+    "qrcode.js": {
+      "name": "qrcode (node-qrcode)",
+      "version": "1.5.4",
+      "license": "MIT",
+      "licenseFile": "qrcode.LICENSE",
+      "upstream": "https://github.com/soldair/node-qrcode",
+      "source": "lib/browser.js at tag v1.5.4 (commit 3848ed2c17de5bcdead487417dbf14c5dd017f8d), bundled and minified with esbuild as an IIFE with the global name QRCode",
+      "sha256": "d59af15f40bc321f78871fe9d892d1dbbf05e35e20ad22aa51203c68185b58b6"
+    },
+    "argon2id.js": {
+      "name": "argon2id (openpgpjs)",
+      "license": "MIT",
+      "licenseFile": "argon2id.LICENSE",
+      "upstream": "https://github.com/openpgpjs/argon2id",
+      "source": "rebuilt reproducibly by tools/argon2id/build.sh and checked against the RFC 9106 test vectors by tools/argon2id/verify.js",
+      "sha256": "9b8a72c57bcbaa5142117301cedb54f8043603e0c0485400db8b04a5f84d695e"
+    }
+  }
+}

@@ -1,0 +1,231 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "issuer",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "accountName",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "encryptedSecret",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "secretIv",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "keyVersion",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "algorithm",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "digits",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "periodSeconds",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "createdAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "mutationId",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "encryptedLabel",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "labelIv",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "authenticatorEntries",
+      "fieldPath": "schemaVersion",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "deletedEntries",
+      "fieldPath": "expireAt",
+      "indexes": [],
+      "ttl": false
+    },
+    {
+      "collectionGroup": "deletedEntries",
+      "fieldPath": "schemaVersion",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "tokenHash",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "email",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "displayName",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "expiresAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "updatedAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "schemaVersion",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "googleSubject",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "email",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "displayName",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "profileUpdatedAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "schemaVersion",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "lockTimeoutSeconds",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "lockOnScreenLock",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyVersion",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyCreatedAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyUpdatedAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyAlgorithm",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyIterations",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeySalt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyIv",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKey",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyMemoryKiB",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "wrappedVaultKeyParallelism",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "vaultRevision",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "vaultResetAt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "vaultResetStatus",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "entryCount",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "users",
+      "fieldPath": "vaultGeneration",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "clientSessions",
+      "fieldPath": "vaultGeneration",
+      "indexes": []
+    },
+    {
+      "indexes": [],
+      "fieldPath": "*",
+      "collectionGroup": "readBudgets"
+    }
+  ]
+}

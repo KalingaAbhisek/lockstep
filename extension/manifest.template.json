@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Lockstep",
+  "description": "Secure authenticator codes, always in step across your devices.",
+  "version": "0.4.1",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "identity",
+    "idle",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    },
+    "default_popup": "popup.html",
+    "default_title": "Lockstep"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src LOCKSTEP_API_ORIGIN; img-src 'self' data: blob:; style-src 'self'; base-uri 'none'; require-trusted-types-for 'script'; trusted-types lockstep-scripts"
+  }
+}

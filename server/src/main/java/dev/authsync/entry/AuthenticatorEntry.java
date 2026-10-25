@@ -19,11 +19,22 @@ public final class AuthenticatorEntry {
     private final Instant createdAt;
     private final Instant updatedAt;
     private final UUID mutationId;
+    // Optional: issuer and account name encrypted by the client (then issuer/accountName are placeholders).
+    private final byte[] encryptedLabel;
+    private final byte[] labelIv;
 
     public AuthenticatorEntry(UUID id, String googleSubject, String issuer, String accountName,
                               byte[] encryptedSecret, byte[] secretIv, int keyVersion, String algorithm,
                               int digits, int periodSeconds, Instant createdAt, Instant updatedAt,
                               UUID mutationId) {
+        this(id, googleSubject, issuer, accountName, encryptedSecret, secretIv, keyVersion, algorithm,
+                digits, periodSeconds, createdAt, updatedAt, mutationId, null, null);
+    }
+
+    public AuthenticatorEntry(UUID id, String googleSubject, String issuer, String accountName,
+                              byte[] encryptedSecret, byte[] secretIv, int keyVersion, String algorithm,
+                              int digits, int periodSeconds, Instant createdAt, Instant updatedAt,
+                              UUID mutationId, byte[] encryptedLabel, byte[] labelIv) {
         this.id = id;
         this.googleSubject = googleSubject;
         this.issuer = issuer;
@@ -37,6 +48,8 @@ public final class AuthenticatorEntry {
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.mutationId = mutationId;
+        this.encryptedLabel = encryptedLabel == null ? null : Arrays.copyOf(encryptedLabel, encryptedLabel.length);
+        this.labelIv = labelIv == null ? null : Arrays.copyOf(labelIv, labelIv.length);
     }
 
     public UUID getId() { return id; }
@@ -52,4 +65,6 @@ public final class AuthenticatorEntry {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public UUID getMutationId() { return mutationId; }
+    public byte[] getEncryptedLabel() { return encryptedLabel == null ? null : Arrays.copyOf(encryptedLabel, encryptedLabel.length); }
+    public byte[] getLabelIv() { return labelIv == null ? null : Arrays.copyOf(labelIv, labelIv.length); }
 }

@@ -1,12 +1,29 @@
 spring:
   application:
     name: authsync
+  # Requests mostly wait on Firestore; virtual threads make that waiting cheap.
+  threads:
+    virtual:
+      enabled: true
 
 server:
   port: ${PORT:8080}
-  forward-headers-strategy: framework
+  # Tomcat takes the client address from the rightmost X-Forwarded-For entry that is not a proxy, so a
+  # caller cannot choose it (used to limit refused session checks per address). Cloud Run's front end is an
+  # internal address and is skipped automatically; list your own load balancer or proxy addresses (a regular
+  # expression) in TRUSTED_PROXIES if requests reach the API through one.
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      trusted-proxies: ${TRUSTED_PROXIES:}
   error:
     include-message: never
+  # The vault list and rotation responses are mostly Base64 and shrink to about half when compressed.
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 2KB
+
 
 authsync:
   google-web-client-id: ${GOOGLE_WEB_CLIENT_ID:}
@@ -14,4 +31,21 @@ authsync:
   allowed-origins: ${ALLOWED_ORIGINS:http://localhost:5173}
   firebase-project-id: ${FIREBASE_PROJECT_ID:}
   firebase-credentials-path: ${GOOGLE_APPLICATION_CREDENTIALS:}
+  # Remember a validated client session for this many seconds (0 = check Firestore on every request). A
+  # session signed out on another server instance can still be used here for at most this long, except for
+  # the high-risk requests (key changes, reset, signing out everywhere), which always check Firestore.
+  session-cache-seconds: ${SESSION_CACHE_SECONDS:5}
+  # The API is also served at <prefix>/api for a Firebase Hosting rewrite (same-origin, HttpOnly cookie).
+  public-path-prefix: ${PUBLIC_PATH_PREFIX:/lockstep}
+  # Reset, recovery-key rotation, replacing the wrapped key and "sign out of all devices" need a Google
+  # sign-in at most this many seconds old (the apps ask for one when needed).
+  reauth-max-age-seconds: ${REAUTH_MAX_AGE_SECONDS:300}
+  # Key changes must say which vault revision they expect, so an outdated app cannot replace a newer key.
+  require-vault-revision: ${REQUIRE_VAULT_REVISION:true}
+  # New and changed passphrases (and existing vaults at their next unlock) are protected with Argon2id.
+  argon2id-wrapping: ${ARGON2ID_WRAPPING:true}
+  # Changes to an existing account must say which version they were made from (baseMutationId), so a delayed
+  # or outdated upload can never overwrite a newer edit. Apps from before this rule get a "stale" refusal that
+  # makes them drop the change and show "update Lockstep". Set to false only while very old apps are still in use.
+  require-edit-base: ${REQUIRE_EDIT_BASE:true}
 

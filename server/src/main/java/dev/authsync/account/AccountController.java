@@ -1,6 +1,7 @@
 package dev.authsync.account;
 
 import com.google.cloud.firestore.Firestore;
+import dev.authsync.lock.FirestoreLockSettingsRepository;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,15 +21,10 @@ public class AccountController {
 
     @GetMapping
     AccountStatus status(@AuthenticationPrincipal Jwt jwt) {
-        try {
-            boolean exists = firestore.collection("users").document(jwt.getSubject()).get().get().exists();
-            return new AccountStatus(exists);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Account lookup was interrupted", exception);
-        } catch (ExecutionException exception) {
-            throw new IllegalStateException("Account lookup failed", exception.getCause());
-        }
+        // A reset vault leaves only bookkeeping fields behind; that is not an existing account.
+        boolean exists = FirestoreLockSettingsRepository.accountExists(dev.authsync.config.FirestoreCalls.await(
+                firestore.collection("users").document(jwt.getSubject()).get(), "Account lookup"));
+        return new AccountStatus(exists);
     }
 
     public record AccountStatus(boolean exists) {}

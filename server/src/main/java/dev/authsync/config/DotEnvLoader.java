@@ -20,7 +20,9 @@ public final class DotEnvLoader {
             "GOOGLE_EXTENSION_CLIENT_ID",
             "ALLOWED_ORIGINS",
             "FIREBASE_PROJECT_ID",
-            "GOOGLE_APPLICATION_CREDENTIALS"
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "PORT", "TRUSTED_PROXIES", "SESSION_CACHE_SECONDS", "PUBLIC_PATH_PREFIX",
+            "REAUTH_MAX_AGE_SECONDS", "REQUIRE_VAULT_REVISION", "ARGON2ID_WRAPPING", "REQUIRE_EDIT_BASE"
     );
 
     private DotEnvLoader() {}
