@@ -202,7 +202,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await web.click("#open-settings"); await web.click("#settings-key-rotate");
   await web.waitForSelector("#confirm-dialog[open]"); await web.fill("#confirm-passkey", P);
   const [, extRotation] = await Promise.all([
-   web.click("#confirm-accept"),
+   // If the extension's rotation lands first, the web app locks and its question closes before the click: that
+   // is one of the expected outcomes (checked below), so the click does not wait for a dialog that is gone.
+   web.click("#confirm-accept", { timeout: 5000 }).catch(() => null),
    worker.evaluate(P => rotateEncryptionKey(P).then(r => `rotated to ${r.version}`, e => e.code || e.message), P)
   ]);
   // The web app either rotated, was refused, or was locked by the extension's rotation before it started.

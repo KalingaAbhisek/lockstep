@@ -12,6 +12,11 @@ RUN java -Djarmode=tools -jar server/target/authsync-server-*.jar extract \
 
 FROM eclipse-temurin:21-jre
 
+# The Ubuntu 26.04 base ships Pebble (/usr/bin/pebble), a service manager this image never runs; its Go
+# runtime carries high-severity standard-library CVEs until Canonical rebuilds it. Removing it leaves
+# nothing to exploit and keeps the image scan in CI meaningful.
+RUN rm -f /usr/bin/pebble
+
 WORKDIR /app
 COPY --from=build /workspace/application /app/application
 

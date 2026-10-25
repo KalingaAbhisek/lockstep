@@ -100,10 +100,18 @@ jobs:
     name: Container image scan
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       security-events: write # upload the full reports to the repository's code-scanning page
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Code scanning uploads need GitHub Code Security on a private repository (a personal account cannot
+      # enable it there): they run while the repository is public and are skipped while it is private. The
+      # vulnerability checks below fail the build either way.
+      - id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" >> "$GITHUB_OUTPUT"
       - run: docker build -t lockstep-api:ci . && docker build -t lockstep-web:ci webapp
       # Fails on fixable critical or high vulnerabilities in either image.
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -133,12 +141,12 @@ jobs:
           output: trivy-web.sarif
           exit-code: "0"
       - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        if: always()
+        if: always() && steps.visibility.outputs.private == 'false' && hashFiles('trivy-api.sarif') != ''
         with:
           sarif_file: trivy-api.sarif
           category: trivy-api
       - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        if: always()
+        if: always() && steps.visibility.outputs.private == 'false' && hashFiles('trivy-web.sarif') != ''
         with:
           sarif_file: trivy-web.sarif
           category: trivy-web
@@ -160,7 +168,8 @@ jobs:
 
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    # Needs GitHub Code Security on a private repository (see "Container image scan"): runs while it is public.
+    if: github.event_name == 'pull_request' && github.event.repository.private == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
