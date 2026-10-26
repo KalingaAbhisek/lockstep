@@ -66,6 +66,7 @@ const scenarios = [
     { label: "session-replacement", script: "session-replacement.test.js", extension: true, env: { LIVE_CHANGES: "1" } },
     { label: "offline-retry", script: "offline-retry.test.js", extension: true },
     { label: "cross-client-keys", script: "cross-client-keys.test.js", extension: true, env: { LIVE_CHANGES: "1" } },
+    { label: "cross-client-restore", script: "cross-client-restore.test.js", extension: true, env: { LIVE_CHANGES: "1" } },
     { label: "popup-closed", script: "popup-closed.test.js", extension: true, env: { LIVE_CHANGES: "1" } },
     { label: "stale-google-token", script: "stale-google-token.test.js", extension: true, env: { LIVE_CHANGES: "1" } },
     { label: "no-google-token", script: "stale-google-token.test.js", extension: true, env: { LIVE_CHANGES: "1", NO_GOOGLE_TOKEN: "1" } },

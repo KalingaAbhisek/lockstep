@@ -922,7 +922,8 @@ async function restoreVault(event) {
         check();
         const wrappedKey = await LockstepVault.exportWrappedKey(ownerSubject());
         const expectedRevision = await LockstepVault.expectedRevision(ownerSubject());
-        state.lockConfig = await api("/api/v1/lock", { method:"PUT", body:JSON.stringify({ timeoutSeconds:300, lockOnScreenLock:false, wrappedKey, expectedRevision }) });
+        const kept = normalizeLockConfig(state.lockConfig); // restoring changes the passphrase, not the user's lock settings
+        state.lockConfig = await api("/api/v1/lock", { method:"PUT", body:JSON.stringify({ timeoutSeconds:kept.timeoutSeconds, lockOnScreenLock:kept.lockOnScreenLock, wrappedKey, expectedRevision }) });
         check();
         await LockstepVault.markWrappedKeySynced(ownerSubject(), state.lockConfig?.vaultRevision,state.lockConfig?.wrappedKey);
         check();

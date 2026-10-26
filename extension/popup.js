@@ -1357,7 +1357,8 @@ bind("restore-form", "submit", async (event) => {
     const passcode = $("restore-passcode").value;
     if (passcode.length < NEW_PASSPHRASE_MIN_LENGTH) { $("restore-error").textContent = `Passphrase must contain at least ${NEW_PASSPHRASE_MIN_LENGTH} characters.`; return; }
     if (passcode !== $("restore-passcode-confirm").value) { $("restore-error").textContent = "Passphrases do not match."; return; }
-    const result = await send("IMPORT_RECOVERY_KEY", { recoveryKey: $("restore-key").value, passcode });
+    // Restoring is how a locked vault is opened without its passphrase, so the worker must not require it unlocked.
+    const result = await send("IMPORT_RECOVERY_KEY", { recoveryKey: $("restore-key").value, passcode, recoveryMode: true });
     if (!result.ok) {
         if (result.code === "SESSION_EXPIRED") { showSignedOut(); status("Session expired. Sign in with Google again.", true); return; }
         $("restore-error").textContent = result.error; return;

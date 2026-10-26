@@ -108,7 +108,7 @@ http.createServer((req,res)=>{
       // wipeVault: the server's data is deleted outside Lockstep (for example in the Firebase console); the
       // revision starts again from 0, but the signed-in session stays valid.
       if(url.searchParams.get("wipeVault")){const {session,sessions,perClient}=db;db=freshDb();Object.assign(db,{session,sessions,perClient});}
-      return send(res,200,{calls,entries:[...db.entries.values()].map(e=>e.issuer+":"+e.accountName),encrypted:[...db.entries.values()].filter(e=>e.encryptedLabel).length,lock:db.lock.enabled,keyVersion:db.lock.wrappedKey?.currentVersion??null,wrappedKey:db.lock.wrappedKey?.wrappedMasterKey??null,revision:db.revision,exists:db.exists,passcodeSeen:db.passcodeSeen,session:db.session,sessions:db.sessions,perClient:db.perClient,cookieSessions:db.cookieSessions||0,signedOutAll:db.signedOutAll,resets:db.resets||0,
+      return send(res,200,{calls,entries:[...db.entries.values()].map(e=>e.issuer+":"+e.accountName),encrypted:[...db.entries.values()].filter(e=>e.encryptedLabel).length,lock:db.lock.enabled,lockTimeout:db.lock.timeoutSeconds,lockOnScreenLock:db.lock.lockOnScreenLock,keyVersion:db.lock.wrappedKey?.currentVersion??null,wrappedKey:db.lock.wrappedKey?.wrappedMasterKey??null,revision:db.revision,exists:db.exists,passcodeSeen:db.passcodeSeen,session:db.session,sessions:db.sessions,perClient:db.perClient,cookieSessions:db.cookieSessions||0,signedOutAll:db.signedOutAll,resets:db.resets||0,
         wrapping:db.lock.wrappedKey?.wrapping??null,outdatedRefused,liveConnections:liveClients.size,mutations:[...db.entries.values()].map(e=>e.mutationId)});}
     calls.push(m+" "+p+(url.search||""));
     if(body&&/"passcode"/.test(body)&&p!=="/api/v1/lock/verify")db.passcodeSeen++;

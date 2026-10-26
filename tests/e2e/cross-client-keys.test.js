@@ -53,7 +53,23 @@ const googleStub = "window.google={accounts:{id:{initialize(){},renderButton(){}
    const keyGone = who === "web" ? !await web.evaluate(() => LockstepVault.isUnlocked("user-1"))
     : !await worker.evaluate(async () => LockstepVault.isUnlocked("user-1") || Boolean((await chrome.storage.session.get("unlockedMaster")).unlockedMaster));
    assert(keyGone, `${who}: the unlocked key was kept after the change`);
-   return Date.now() - started;
+   const elapsed = Date.now() - started;
+   // Exactly what the Lock button leaves behind: no saved unlocked session, no codes on screen, and
+   // reopening (popup) or reloading (web) stays locked.
+   if (who === "web") {
+    const saved = await web.evaluate(() => Object.keys(sessionStorage).filter(k => k.startsWith("authsync.session-key.") || k.startsWith("authsync.unlocked.")));
+    assert.deepEqual(saved, [], `web: the unlocked session was kept after the change (${saved})`);
+   } else {
+    const saved = await worker.evaluate(async () => chrome.storage.session.get(["lastUnlockedAt", "unlockedMaster"]));
+    assert(!saved.lastUnlockedAt && !saved.unlockedMaster, "extension: the unlocked session was kept after the change");
+   }
+   const codesShown = await page.evaluate(() => [...document.querySelectorAll("#entries .code, #entries [data-code]")].filter(n => n.offsetParent && /\d{3}/.test(n.textContent)).length);
+   assert.equal(codesShown, 0, `${who}: codes still visible while locked`);
+   await page.reload();
+   await page.waitForSelector("#locked:not(.hidden), #signed-in:not(.hidden), #signed-out:not(.hidden)", { timeout: 15000 });
+   await page.waitForTimeout(1500);
+   assert(await visible(page, "locked") && !await visible(page, "signed-in"), `${who}: reopening after the change did not stay locked`);
+   return elapsed;
   }
   async function unlock(page, passphrase) {
    // The lock screen may already explain why it locked; only the answer to this attempt counts.
