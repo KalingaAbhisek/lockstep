@@ -100,6 +100,9 @@ http.createServer((req,res)=>{
       if(url.searchParams.get("clearCalls"))calls.length=0;
       if(url.searchParams.get("nobootstrap"))db.noBootstrap=true;
       if(url.searchParams.has("down"))db.down=url.searchParams.get("down")==="1";
+      // blockClient=web|extension|none: that client cannot reach the server (connections dropped, its live
+      // channel closed), as if it were offline, while the other client keeps working.
+      if(url.searchParams.has("blockClient")){db.blockClient=url.searchParams.get("blockClient");for(const c of [...liveClients])if(c.type===db.blockClient){liveClients.delete(c);c.res.destroy();}}
       // failNext=N&failClient=web|extension: that client's next N reads of /api/v1/bootstrap, /api/v1/account or
       // /api/v1/lock fail with a temporary error (503 + Retry-After), like a busy or briefly unavailable API.
       if(url.searchParams.has("failNext")){db.failNext=Number(url.searchParams.get("failNext"));db.failClient=url.searchParams.get("failClient")||"extension";}
@@ -115,6 +118,7 @@ http.createServer((req,res)=>{
     const json=body?JSON.parse(body):null;
     if(p==="/api/v1/config")return send(res,200,{googleClientId:"test-client"});
     const clientType=req.headers["x-lockstep-client"]==="extension"?"extension":"web";
+    if(db.blockClient===clientType){req.socket.destroy();return;}
     if(clientType===db.failClient&&db.failNext>0&&m==="GET"&&["/api/v1/bootstrap","/api/v1/account","/api/v1/lock"].includes(p)){
       db.failNext--;res.setHeader("Retry-After","1");
       return send(res,503,{code:"BACKEND_UNAVAILABLE",error:"Lockstep is temporarily unavailable. Please try again in a moment."});
