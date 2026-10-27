@@ -108,7 +108,7 @@ async function unlock(page, passphrase) {
   // deleted and the browser signs out.
   await a.evaluate((token) => { state.token = token; showRestore(); }, googleToken(600));
   await a.evaluate(() => { resetVault(); }); // the restore page's Reset button
-  await a.waitForSelector("#confirm-dialog[open]"); await a.fill("#confirm-passkey", P2); await a.click("#confirm-accept");
+  await a.waitForSelector("#confirm-dialog[open]"); await a.fill("#confirm-passkey", "RESET"); await a.click("#confirm-accept");
   await a.waitForSelector("#reauth-dialog[open]", { timeout: 10000 });
   await a.evaluate((token) => onGoogleCredential({ credential: token }), googleToken());
   await a.waitForSelector("#signed-out:not(.hidden)", { timeout: 15000 });

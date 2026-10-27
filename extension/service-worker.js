@@ -214,7 +214,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         DELETE_ENTRY: () => withUnlocked(() => deleteEntry(message.id, message.passcode)),
         EXPORT_RECOVERY_KEY: () => withUnlocked(() => exportRecoveryKey(message.passcode)),
         IMPORT_RECOVERY_KEY: () => message.recoveryMode ? importRecoveryKey(message.recoveryKey, message.passcode) : withUnlocked(() => importRecoveryKey(message.recoveryKey, message.passcode)),
-        RESET_VAULT: () => resetVault(message.passcode),
+        RESET_VAULT: () => resetVault(message.confirmation),
         ROTATE_ENCRYPTION_KEY: () => withUnlocked(() => rotateEncryptionKey(message.passcode)),
         GET_SYNC_STATE: syncState,
         CHECK_CONNECTIVITY: checkConnectivity,
@@ -1296,12 +1296,13 @@ async function lockVault() {
     const owner=await subject();
     await clearUnlockedSession(owner, true);
 }
-async function resetVault(passcode) {
+// For someone who lost both the passphrase and every recovery key, so no passphrase is asked (the server cannot
+// check one anyway): the user typed RESET, and the server requires a recent Google sign-in.
+async function resetVault(confirmation) {
+    if (confirmation !== "RESET") throw new Error("Type RESET to confirm. Nothing was deleted.");
     const owner = await subject();
     await activeAppSession();
     await ensureRecentGoogleSignIn();
-    if (!await LockstepVault.exportWrappedKey(owner)) throw new Error("Open this vault on this device before resetting it.");
-    await requireExportPassphrase(passcode);
     if (owner !== await subject()) throw coded("SESSION_EXPIRED", "Sign in again before resetting this vault.");
     await api("/api/v1/vault", { method: "DELETE" });
     await LockstepVault.clearSubject(owner); await chrome.storage.session.remove(REPLACED_VAULT_KEY);

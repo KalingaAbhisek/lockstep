@@ -145,10 +145,13 @@ bind("qr-dialog", "close", clearQrDialog);
 bind("confirm-cancel", "click", () => $("confirm-dialog").close("cancel"));
 bind("confirm-accept", "click", () => $("confirm-dialog").close("confirm"));
 // Enter in the passphrase field confirms, like submitting a form.
-bind("confirm-passkey", "keydown", (event) => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); $("confirm-dialog").close("confirm"); } });
+bind("confirm-passkey", "keydown", (event) => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (confirmWordMatches()) $("confirm-dialog").close("confirm"); } });
+bind("confirm-passkey", "input", () => { if (confirmWord) $("confirm-accept").disabled = !confirmWordMatches(); });
 bind("confirm-dialog", "close", () => {
-    confirmPasskeyValue = $("confirm-passkey").value; $("confirm-passkey").value = "";
-    confirmationResolve?.($("confirm-dialog").returnValue === "confirm");
+    const typed = confirmWordMatches();
+    confirmPasskeyValue = confirmWord ? "" : $("confirm-passkey").value; $("confirm-passkey").value = "";
+    confirmWord = null; configureConfirmInput(null);
+    confirmationResolve?.(typed && $("confirm-dialog").returnValue === "confirm");
     confirmationResolve = null;
 });
 document.querySelectorAll("[data-settings-detail]").forEach((button) => {
@@ -1373,12 +1376,13 @@ bind("restore-back", "click", () => restoreReturnView === "locked" ? showLocked(
 bind("restore-reset", "click", async () => {
     const confirmed = await confirmAction({
         title: "Reset vault?",
-        message: "This permanently deletes all authenticator accounts and vault data from this device and the server. This cannot be undone.",
-        confirmLabel: "Delete and reset", iconName: "minus", tone: "danger", passphrase: true
+        message: "This permanently deletes all authenticator accounts and vault data from this device and the server. Other devices are signed out and remove their copy when they next sign in. This cannot be undone. Type RESET, then confirm with Google.",
+        confirmLabel: "Delete and reset", iconName: "minus", tone: "danger", typedWord: "RESET"
     });
-    const passcode = confirmPasskeyValue; confirmPasskeyValue = "";
+    confirmPasskeyValue = "";
     if (!confirmed) return;
-    const result = await send("RESET_VAULT", { passcode });
+    // No passphrase: this is for someone who lost both the passphrase and every recovery key.
+    const result = await send("RESET_VAULT", { confirmation: "RESET" });
     if (!result.ok) {
         if (result.code === "SESSION_EXPIRED") { showSignedOut(); status("Session expired. Sign in with Google again.", true); return; }
         $("restore-error").textContent = result.error; return;
@@ -1562,8 +1566,18 @@ async function exportBackup() {
     else downloadFile(text, `lockstep-totp-backup-${date}.txt`, "text/plain;charset=utf-8");
     settingsMessage(`${entries.length} account${entries.length === 1 ? "" : "s"} exported${choice.encrypted ? " (encrypted)" : ""}.`);
 }
-function confirmAction({ title, message, confirmLabel = "Continue", iconName = "shield", tone = "accent", passphrase = false }) {
+// typedWord: the user must type this word (for example RESET) before the action button works.
+let confirmWord = null;
+function confirmWordMatches() { return !confirmWord || $("confirm-passkey").value.trim().toUpperCase() === confirmWord; }
+function configureConfirmInput(typedWord) {
+    const input = $("confirm-passkey");
+    input.type = typedWord ? "text" : "password"; input.autocomplete = typedWord ? "off" : "current-password"; input.spellcheck = false;
+    input.placeholder = typedWord ? `Type ${typedWord} to confirm` : "Passphrase"; input.setAttribute("aria-label", typedWord ? `Type ${typedWord} to confirm` : "Vault passphrase");
+    $("confirm-accept").disabled = Boolean(typedWord);
+}
+function confirmAction({ title, message, confirmLabel = "Continue", iconName = "shield", tone = "accent", passphrase = false, typedWord = null }) {
     const dialog = $("confirm-dialog");
+    confirmWord = typedWord || null; configureConfirmInput(confirmWord); passphrase = passphrase || Boolean(typedWord);
     $("confirm-passkey").value = ""; $("confirm-passkey").classList.toggle("hidden", !passphrase); confirmPasskeyValue = "";
     $("confirm-title").textContent = title;
     $("confirm-message").textContent = message;

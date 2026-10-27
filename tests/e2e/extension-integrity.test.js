@@ -58,7 +58,7 @@ const PASS = "correct-horse-battery";
     const withInteractive = await hasRecentGoogleSignIn();
     await chrome.storage.session.remove("interactiveSignInAt");
     const silentOnly = await hasRecentGoogleSignIn();
-    let reset; try { await resetVault(); reset = "reset"; } catch (error) { reset = error.code; }
+    let reset; try { await resetVault("RESET"); reset = "reset"; } catch (error) { reset = error.code; }
     return { withInteractive, silentOnly, reset };
   });
   log("recent sign-in:", JSON.stringify(recent));
@@ -193,12 +193,13 @@ const PASS = "correct-horse-battery";
   check(deletion.wrong==="WRONG_PASSKEY" && deletion.oldGoogle==="REAUTH_REQUIRED" && deletion.kept && deletion.gone && deletion.replay==="DELETED", "confirmed deletion failed or lost an account before acknowledgement");
 
   const reset = await worker.evaluate(async pass => {
-    let wrong;try { await resetVault("incorrect-passphrase"); } catch(e) {wrong=e.code;}
+    // No passphrase is asked (it is for someone who lost it); the typed word RESET is required.
+    let wrong;try { await resetVault("incorrect-passphrase"); } catch(e) {wrong=e.message;}
     const kept=(await localEntries()).length;
-    await resetVault(pass);
+    await resetVault("RESET");
     return {wrong,kept,remaining:(await LockstepVault.localEncryptedEntries("user-1")).length};
   },PASS);
-  check(reset.wrong==="WRONG_PASSKEY" && reset.kept===3 && reset.remaining===0 && (await control("")).resets===1,"vault reset did not require the passphrase or left local data behind");
+  check(/Type RESET/.test(reset.wrong||"") && reset.kept===3 && reset.remaining===0 && (await control("")).resets===1,"vault reset did not require typing RESET or left local data behind");
 
   check(errors.length === 0, `page errors: ${errors}`);
   log("errors:", errors.length ? errors : "none");

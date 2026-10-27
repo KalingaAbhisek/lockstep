@@ -293,7 +293,8 @@ function bindEvents() {
     // Dialog "close" events do not bubble; a capturing listener sees every one, after the dialog's own handlers.
     document.addEventListener("close", () => setTimeout(flushLiveRedraw, 0), true);
     // Enter in the passphrase field confirms, like submitting a form.
-    el("confirm-passkey").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); el("confirm-dialog").close("confirm"); } });
+    el("confirm-passkey").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (confirmWordMatches()) el("confirm-dialog").close("confirm"); } });
+    el("confirm-passkey").addEventListener("input", () => { if (state.confirmWord) el("confirm-accept").disabled = !confirmWordMatches(); });
     // The seconds label changes once a second and the progress bar is a CSS transition, so 4 checks a second
     // are enough to switch codes on time.
     setInterval(tick, 250);
@@ -944,12 +945,12 @@ async function restoreVault(event) {
 
 async function resetVault() {
     const owner = ownerSubject();
-    const confirmed = await confirmAction({ title:"Reset vault?", message:"Enter your Lockstep passphrase. This permanently deletes all authenticator accounts and vault data from this device and the server. This cannot be undone.", label:"Reset", iconName:"trash", danger:true, passphrase:true });
-    const passphrase = state.confirmPasskey; state.confirmPasskey = "";
+    // For someone who lost both the passphrase and every recovery key: no passphrase is asked (the server cannot
+    // check one anyway). Typing RESET guards against slips; the server requires a recent Google sign-in.
+    const confirmed = await confirmAction({ title:"Reset vault?", message:"This permanently deletes all authenticator accounts and vault data from this device and the server. Other devices are signed out and remove their copy when they next sign in. This cannot be undone. Type RESET, then confirm with Google.", label:"Reset", iconName:"trash", danger:true, typedWord:"RESET" });
+    state.confirmPasskey = "";
     if (!confirmed) return;
     try {
-        if (!await LockstepVault.exportWrappedKey(owner)) throw new Error("Open this vault on this device before resetting it.");
-        if (!await LockstepVault.checkPassphrase(owner, passphrase)) throw new Error("Incorrect passphrase. Nothing was deleted.");
         if (!await ensureRecentGoogleSignIn("Confirm with Google to reset your vault.")) return;
         if (owner !== ownerSubject()) return;
         await api("/api/v1/vault", { method:"DELETE" });
@@ -2642,16 +2643,24 @@ async function adoptServerKeyAfterConflict(owner){
     }catch{return false;}
 }
 
-function confirmAction({title,message,label="Continue",iconName="shield",danger=false,passphrase=false}) {
+// typedWord: the user must type this word (for example RESET) before the action button works.
+function confirmAction({title,message,label="Continue",iconName="shield",danger=false,passphrase=false,typedWord=null}) {
     const dialog=el("confirm-dialog"); el("confirm-title").textContent=title; el("confirm-message").textContent=message; el("confirm-accept").textContent=label;
     el("confirm-icon-use").setAttribute("href",`#i-${iconName}`); dialog.classList.toggle("danger",danger); dialog.returnValue="cancel";
-    const input=el("confirm-passkey"); input.value=""; input.classList.toggle("hidden",!passphrase); state.confirmPasskey="";
+    const input=el("confirm-passkey"); input.value=""; input.classList.toggle("hidden",!passphrase&&!typedWord); state.confirmPasskey="";
+    state.confirmWord=typedWord||null; configureConfirmInput(input,typedWord); passphrase=passphrase||Boolean(typedWord);
     // A newer question replaces one still open: the earlier one counts as cancelled instead of waiting forever.
     const previous=state.confirmationResolve; state.confirmationResolve=null; previous?.(false); state.confirmationAborted=false;
     if(!dialog.open)dialog.showModal(); if(passphrase) input.focus();
     return new Promise((resolve)=>{state.confirmationResolve=resolve;});
 }
-function resolveConfirmation(){const passkeyInput=el("confirm-passkey"),aborted=Boolean(state.confirmationAborted);state.confirmationAborted=false;state.confirmPasskey=aborted?"":passkeyInput.value;passkeyInput.value="";state.confirmationResolve?.(!aborted&&el("confirm-dialog").returnValue==="confirm");state.confirmationResolve=null;}
+function confirmWordMatches(){return !state.confirmWord||el("confirm-passkey").value.trim().toUpperCase()===state.confirmWord;}
+function configureConfirmInput(input,typedWord){
+    input.type=typedWord?"text":"password"; input.autocomplete=typedWord?"off":"current-password"; input.spellcheck=false;
+    input.placeholder=typedWord?`Type ${typedWord} to confirm`:"Passphrase"; input.setAttribute("aria-label",typedWord?`Type ${typedWord} to confirm`:"Vault passphrase");
+    el("confirm-accept").disabled=Boolean(typedWord);
+}
+function resolveConfirmation(){const passkeyInput=el("confirm-passkey"),aborted=Boolean(state.confirmationAborted),typed=confirmWordMatches();state.confirmationAborted=false;state.confirmPasskey=aborted||state.confirmWord?"":passkeyInput.value;passkeyInput.value="";state.confirmWord=null;configureConfirmInput(passkeyInput,null);state.confirmationResolve?.(!aborted&&typed&&el("confirm-dialog").returnValue==="confirm");state.confirmationResolve=null;}
 
 // The theme button cycles System -> Light -> Dark. index.html applies the saved choice before the first paint.
 function cycleTheme(){const next=THEMES[(THEMES.indexOf(state.theme)+1)%THEMES.length];applyTheme(next);try{if(next==="system")localStorage.removeItem("authsync.theme");else localStorage.setItem("authsync.theme",next);}catch{/* storage unavailable */}toast(`${next[0].toUpperCase()+next.slice(1)} theme`);}
