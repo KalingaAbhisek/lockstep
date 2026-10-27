@@ -18,6 +18,10 @@ COPY --from=assets /assets/ /
 # Current stable nginx line; Dependabot proposes updates (see .github/dependabot.yml).
 FROM nginx:1.30-alpine
 
+# Take Alpine's published security fixes now instead of waiting for a new nginx image (the CI image scan
+# fails on any HIGH/CRITICAL finding that already has a fix, for example in curl or brotli).
+RUN apk upgrade --no-cache
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html privacy.html privacy.css manifest.webmanifest styles.css /usr/share/nginx/html/
 COPY --from=assets /assets/app.js /assets/crypto-store.js /assets/image-import.js /assets/live-changes.js /assets/sw.js /usr/share/nginx/html/
