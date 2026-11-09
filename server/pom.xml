@@ -21,7 +21,19 @@
         <!-- Patch only the affected managed families; keep the existing Boot API baseline. -->
         <jackson-bom.version>3.1.7</jackson-bom.version>
         <tomcat.version>11.0.27</tomcat.version>
+        <!-- Guava comes in through google-cloud-firestore; 33.6.0 has CVE-2026-102554 (fixed in 33.7.2). -->
+        <guava.version>33.7.2-jre</guava.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>

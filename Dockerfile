@@ -17,6 +17,12 @@ FROM eclipse-temurin:21-jre
 # nothing to exploit and keeps the image scan in CI meaningful.
 RUN rm -f /usr/bin/pebble
 
+# Take Ubuntu's published security fixes now instead of waiting for a new base image (the CI image scan
+# fails on any HIGH/CRITICAL finding that already has a fix, for example in apt).
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=build /workspace/application /app/application
 

@@ -6,6 +6,6 @@
     "test": "node rotation-metadata.test.js && node cross-client-rotation.test.js && node extension-reauth.test.js && node auth-boundaries.test.js && node ui-session-boundaries.test.js && node sync-faults.test.js && node live-changes.test.js && node startup-boundaries.test.js && node snapshot-sync.test.js && node delta-deletion.test.js && node busy-lock-refresh.test.js && node signout.test.js && node image-import.test.js && node import-staging.test.js && node backup-boundaries.test.js && node concurrency.test.js && node unlock-races.test.js && node wrapping-bounds.test.js && node layout-regression.test.js && node run-all.js"
   },
   "devDependencies": {
-    "playwright": "1.56.1"
+    "playwright": "1.65.0"
   }
 }
