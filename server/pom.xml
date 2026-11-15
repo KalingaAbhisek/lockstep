@@ -22,7 +22,7 @@
         <jackson-bom.version>3.1.7</jackson-bom.version>
         <tomcat.version>11.0.27</tomcat.version>
         <!-- Guava comes in through google-cloud-firestore; 33.6.0 has CVE-2026-102554 (fixed in 33.7.2). -->
-        <guava.version>33.7.2-jre</guava.version>
+        <guava.version>33.8.0-jre</guava.version>
     </properties>
 
     <dependencyManagement>
