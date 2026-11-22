@@ -16,7 +16,7 @@ FROM scratch AS minified-files
 COPY --from=assets /assets/ /
 
 # Current stable nginx line; Dependabot proposes updates (see .github/dependabot.yml).
-FROM nginx:1.30-alpine
+FROM nginx:1.31-alpine
 
 # Take Alpine's published security fixes now instead of waiting for a new nginx image (the CI image scan
 # fails on any HIGH/CRITICAL finding that already has a fix, for example in curl or brotli).
